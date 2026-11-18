@@ -25,7 +25,7 @@ services:
           /app/storage/user \
           /app/frontend-logs; do
           if [ -L "$$path" ]; then
-            printf '拒绝使用符号链接目录：%s\n' "$$path" >&2
+            printf 'Refusing symlink directory: %s\n' "$$path" >&2
             exit 1
           fi
         done
@@ -39,11 +39,11 @@ services:
 
         template=/app/storage/templates/AGENTS.md
         if [ -L "$$template" ] || [ ! -f "$$template" ] || [ ! -r "$$template" ] || [ ! -s "$$template" ]; then
-          printf '缺少有效的非空 Agent 指令模板\n' >&2
+          printf 'Missing or empty agent instruction template\n' >&2
           exit 1
         fi
         if [ "$$(wc -c < "$$template")" -gt 65536 ]; then
-          printf 'Agent 指令模板不能超过 64 KiB\n' >&2
+          printf 'Agent instruction template exceeds 64 KiB\n' >&2
           exit 1
         fi
         chown "$${USER_STORAGE_OWNER_UID}:$${USER_STORAGE_GID}" "$$template"
@@ -62,7 +62,7 @@ services:
         chown 0:0 /app/frontend-logs
         chmod 0750 /app/frontend-logs
 
-        # 当前 API 镜像要求 Bucket 已存在；初始化失败时阻止后续应用启动。
+        # The API requires existing buckets. A failed initialization stops application startup.
         node <<'NODE'
         const { Client } = require('minio');
         const env = process.env;
@@ -78,9 +78,9 @@ services:
           if (!await client.bucketExists(env.MINIO_BUCKET)) {
             await client.makeBucket(env.MINIO_BUCKET, env.MINIO_REGION);
           }
-          console.log('Workbench 对象存储 Bucket 已就绪');
+          console.log('Workbench storage buckets are ready');
         })().catch(error => {
-          console.error('Workbench Bucket 初始化失败:', error.code || error.name);
+          console.error('Workbench bucket initialization failed:', error.code || error.name);
           process.exit(1);
         });
         NODE
@@ -160,7 +160,7 @@ services:
       - '${SANDBOX_WORKSPACE_GID:-10001}'
     volumes:
       - ./workbench/storage:/app/storage
-      # Runtime 仅通过受约束的附件 Resolver 写入 attachments；Sandbox 仍按独立授权挂载。
+      # Runtime writes attachments through its resolver. Sandbox mounts are authorized separately.
       - ./workbench/storage/user:/app/storage/user:rw
       - ${RUNTIME_DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock
     logging:
@@ -299,13 +299,13 @@ services:
 
       OPENCLAW_CONFIG_PATH: ${OPENCLAW_APP_CONFIG_PATH:-storage/openclaw-state/openclaw.json}
 
-      # ARMS APM 为可选能力；关闭或未配置时，Workbench 不加载探针且不发生上报。
+      # ARMS APM loads only when enabled and configured.
       ARMS_MONITORING_ENABLED: ${ARMS_MONITORING_ENABLED:-false}
-      # 开启 ARMS 时以下三项必填，分别用于标识应用、上报地域和阿里云授权。
+      # ARMS requires an application identity, region and authorization.
       ARMS_APP_NAME: ${ARMS_APP_NAME:-}
       ARMS_REGION_ID: ${ARMS_REGION_ID:-}
       ARMS_LICENSE_KEY: ${ARMS_LICENSE_KEY:-}
-      # 可选工作空间；留空时由 ARMS 根据账号和地域使用默认工作空间。
+      # Optional workspace. ARMS otherwise uses the account and region default.
       ARMS_WORKSPACE: ${ARMS_WORKSPACE:-}
       FILE_SERVICE_SELECTOR: ${FILE_SERVICE_SELECTOR:-minio}
       MINIO_INTERNAL_ENDPOINT: ${MINIO_HOST:-minio}
@@ -332,7 +332,7 @@ services:
       AZURE_BLOB_PUBLIC_BASE_URL: ${AZURE_BLOB_PUBLIC_BASE_URL:-}
     ports:
       - '${WORKBENCH_HOST_PORT:-38080}:${PORT:-3000}'
-    # 业务表和迁移记录仍写入 DB_SCHEMA；public 提供 Studio 共库的 pg_trgm/vector 扩展。
+    # DB_SCHEMA stores application tables and migrations. The shared public schema supplies pg_trgm and vector.
     command:
       - sh
       - -ec

@@ -1,16 +1,321 @@
 #!/usr/bin/env bash
-# aos-work deployment release: v2026.11.18.2
+# aos-work deployment release: v2026.11.19
 
 set -Eeuo pipefail
+export LC_ALL=C
 IFS=$'\n\t'
 
 DEPLOY_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 export BASIL_DEPLOY_DIR="$DEPLOY_DIR"
 SUPPORT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/aos-work.XXXXXXXX")"
 trap 'rm -rf -- "$SUPPORT_DIR"' EXIT
+cat > "$SUPPORT_DIR/deployment_state.py" <<'AOS_EMBEDDED_FILE_END'
+"""Deployment-local baseline for package files, configuration and Docker resources."""
+import json
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+
+ENV_FILES = tuple('.env.' + group for group in ('studio', 'workbench', 'middleware'))
+PACKAGE_FILES = (
+    'docker-compose.studio.yaml', 'docker-compose.workbench.yaml',
+    *(f'compose/{name}.yaml' for name in ('middleware', 'db', 'cache', 'mq', 'storage')),
+    'workbench/storage/templates/AGENTS.md', 'workbench/storage/nginx/runtime-nginx.conf',
+)
+DIRECTORIES = ('data', 'compose', 'workbench', 'workbench/storage', 'workbench/storage/nginx',
+               'workbench/storage/templates')
+STATE = '.aos-install/baseline.json'
+
+
+def save(path, obj):
+    if path.resolve() != path:
+        raise ValueError(f'Refusing state path through symlink: {path}')
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=path.parent, mode='w', delete=False) as f:
+        json.dump(obj, f, indent=2)
+    os.replace(f.name, path)
+
+
+def begin(root):
+    path = root / STATE
+    if path.resolve() != path:
+        raise ValueError('Unexpected link in the deployment state directory.')
+    if path.is_file():
+        return
+    legacy = any((root / n).exists() for n in ('.aos-selected.sh', '.domains.json', 'data/postgresql',
+                                               'workbench/storage/user'))
+    files = {}
+    for name in (*ENV_FILES, *PACKAGE_FILES):
+        p = root / name
+        if p.resolve() != p:
+            raise ValueError(f'Unexpected symlink: {p}')
+        if p.is_file() and not (legacy and name in ENV_FILES):
+            files[name] = [p.read_text(), p.stat().st_mode & 0o777]
+    def docker(*args):
+        return subprocess.check_output(['docker', *args], text=True).splitlines()
+    images = [] if legacy else docker('image', 'ls', '-a', '--no-trunc', '--format', '{{.Repository}}:{{.Tag}} {{.ID}}')
+    save(path, dict(files=files, directories=[n for n in DIRECTORIES if (root/n).is_dir()],
+                    initial_images=images, legacy=legacy, original_backups=[
+                        p.name for n in ENV_FILES for p in root.glob(n+'.bak*') if not legacy]))
+
+
+def read(root):
+    p = root / STATE
+    return json.loads(p.read_text()) if p.is_file() else {}
+
+
+def record_image(root, ref):
+    state = read(root)
+    if state:
+        image_id = subprocess.check_output(['docker', 'image', 'inspect', '--format', '{{.Id}}', ref], text=True).strip()
+        acquired = state.setdefault('acquired_images', [])
+        row = ref + ' ' + image_id
+        if row not in acquired:
+            acquired.append(row)
+            save(root / STATE, state)
+
+
+def restore(root, state):
+    for name in (*PACKAGE_FILES, *ENV_FILES):
+        p = root / name
+        if p.resolve() != p:
+            raise ValueError(f'Refusing symlink: {p}')
+        if name in state['files']:
+            data, mode = state['files'][name]
+            p.parent.mkdir(exist_ok=True, parents=True)
+            with tempfile.NamedTemporaryFile(dir=p.parent, mode='w', delete=False) as f:
+                f.write(data)
+                os.fchmod(f.fileno(), mode)
+            os.replace(f.name, p)
+        else:
+            p.unlink(missing_ok=True)
+    for name in sorted(DIRECTORIES, key=lambda n: -len(Path(n).parts)):
+        p = root / name
+        if name not in state['directories'] and p.is_dir() and not any(p.iterdir()):
+            p.rmdir()
+AOS_EMBEDDED_FILE_END
+cat > "$SUPPORT_DIR/host-state.sh" <<'AOS_EMBEDDED_FILE_END'
+#!/usr/bin/env bash
+# Root-owned records of host changes made on behalf of one deployment.
+set -Eeuo pipefail
+export LC_ALL=C
+: "${BASIL_DEPLOY_DIR:?Missing deployment directory}"
+key="$(printf '%s' "$(cd "$BASIL_DEPLOY_DIR" && pwd -P)" | sha256sum | cut -d' ' -f1)"
+base=/var/lib/aos-work-deploy
+ledger="$base/$key"
+units=(docker.service docker.socket containerd.service nginx.service certbot.timer)
+hostfiles=(/etc/apt/keyrings/basil-docker.asc /etc/apt/sources.list.d/basil-docker.list /etc/letsencrypt/renewal-hooks/deploy/basil-nginx.sh)
+if [[ "$EUID" != 0 && ! -e "$base" && ( "${1:-}" == preview || "${1:-}" == cleanup ) ]]; then exit 0; fi
+[[ "$EUID" == 0 ]] || { echo 'Host changes require root.' >&2; exit 1; }
+
+init() {
+  install -d -m 0700 "$base" "$ledger"
+  [[ ! -f "$ledger/ready" ]] || return 0
+  local unit file
+  for unit in "${units[@]}"; do
+    systemctl is-active --quiet "$unit" && touch "$ledger/$unit.active"
+    systemctl is-enabled --quiet "$unit" 2>/dev/null && touch "$ledger/$unit.enabled"
+  done
+  for file in "${hostfiles[@]}"; do
+    [[ ! -L "$file" ]] || { echo "Unexpected symlink: $file"; return 1; }
+    [[ ! -f "$file" ]] || cp -p "$file" "$ledger/${file##*/}.before"
+  done
+  for file in /var/lib/docker /var/lib/containerd; do
+    [[ ! -e "$file" ]] || touch "$ledger/${file##*/}.existed"
+  done
+  getent group docker >/dev/null && touch "$ledger/docker.group-existed"
+  [[ ! -e /var/www/basil-acme ]] || touch "$ledger/acme.existed"
+  touch "$ledger/ready"
+}
+
+install_packages() {
+  init
+  local plan list pkg
+  plan="$(apt-get -s --no-install-recommends --no-upgrade install "$@")" || return 1
+  if grep -Eq '^(Remv |Inst [^ ]+ \[)' <<<"$plan"; then
+    echo 'Installation would remove or upgrade existing system packages. Configure these dependencies with your system administrator.'
+    return 1
+  fi
+  list="$(awk '/^Inst / {print $2}' <<<"$plan")"
+  if [[ -n "$list" ]]; then
+    { cat "$ledger/packages" 2>/dev/null || true; printf '%s\n' "$list"; } | sort -u > "$ledger/packages.next"
+    mv "$ledger/packages.next" "$ledger/packages"
+    DEBIAN_FRONTEND=noninteractive apt-get --no-install-recommends --no-upgrade -y install "$@"
+  fi
+}
+
+installed_owned() {
+  [[ -f "$ledger/packages" ]] || return 0
+  local pkg status
+  while read -r pkg; do
+    status="$(dpkg-query -W -f='${db:Status-Status}' "$pkg" 2>/dev/null || true)"
+    [[ -z "$status" || "$status" == not-installed ]] || printf '%s\n' "$pkg"
+  done < "$ledger/packages"
+}
+
+accounts() {
+  if [[ -d /etc/letsencrypt/accounts ]]; then
+    find /etc/letsencrypt/accounts -mindepth 1 -type f -name regr.json | sort
+  fi
+}
+
+cleanup() {
+  [[ -f "$ledger/ready" ]] || return 0
+  local file cert unit name actual
+  local -a packages=()
+  mapfile -t packages < <(installed_owned)
+  if (( ${#packages[@]} )); then
+    local plan
+    plan="$(apt-get -s purge "${packages[@]}")" || return 1
+    while read -r name; do
+      grep -Fxq "$name" "$ledger/packages" || { echo "Retaining host packages: $name is outside this installation."; return 1; }
+    done < <(awk '/^(Remv|Purg) /{print $2}' <<<"$plan")
+    if grep -Eq '^(docker-ce|docker.io|containerd.io|containerd)$' "$ledger/packages"; then
+      if command -v docker >/dev/null; then
+        docker info >/dev/null 2>&1 || { echo 'Start Docker to verify remaining resources before cleanup.'; return 1; }
+        for query in 'ps -aq' 'image ls -aq' 'volume ls -q' 'network ls -q --filter type=custom'; do
+          actual="$(docker $query)" || return 1
+          [[ -z "$actual" ]] || { echo 'Docker still has resources outside this deployment. Host cleanup deferred.'; return 1; }
+        done
+        if [[ "$(docker info --format '{{.DockerRootDir}}')" == /var/lib/docker ]]; then touch "$ledger/docker.default-root"; fi
+      fi
+      if command -v ctr >/dev/null && systemctl is-active --quiet containerd; then
+        local ns
+        while read -r ns; do
+          [[ -z "$ns" || "$ns" == moby ]] && continue
+          [[ -z "$(ctr -n "$ns" containers ls -q)$(ctr -n "$ns" images ls -q)" ]] || {
+            echo "containerd namespace $ns is shared. Host cleanup deferred."; return 1; }
+        done < <(ctr namespaces ls -q)
+      fi
+    fi
+  fi
+  if [[ -s "$ledger/packages" ]] && grep -Eq '^(nginx|nginx-core|nginx-full)$' "$ledger/packages"; then
+    for file in /etc/nginx/conf.d/*.conf /etc/nginx/sites-enabled/*; do
+      [[ ! -e "$file" ]] && continue
+      [[ "$file" == /etc/nginx/sites-enabled/default && "$(readlink -f "$file")" == /etc/nginx/sites-available/default ]] && continue
+      echo "Nginx still has a site at $file. Host cleanup deferred."; return 1
+    done
+  fi
+  if [[ -s "$ledger/packages" ]] && grep -Fxq certbot "$ledger/packages"; then
+    for file in /etc/letsencrypt/renewal/*.conf; do
+      [[ -f "$file" ]] || continue
+      name="${file##*/}"; name="${name%.conf}"
+      if ! grep -Fxq "$name" "$ledger/certs" 2>/dev/null; then
+        echo "Another certificate uses Certbot: $name. Host cleanup deferred."; return 1
+      fi
+    done
+  fi
+  if [[ -s "$ledger/certs" ]]; then
+    local config=""
+    if command -v nginx >/dev/null; then config="$(nginx -T 2>/dev/null)" || return 1; fi
+    while read -r cert; do
+      [[ -f "/etc/letsencrypt/renewal/$cert.conf" ]] || continue
+      if grep -Fq "/live/$cert/" <<<"$config"; then
+        echo "Certificate $cert is still in use. Host cleanup deferred."; return 1
+      fi
+      certbot delete --non-interactive --cert-name "$cert"
+    done < "$ledger/certs"
+  fi
+  if [[ -f "$ledger/accounts.added" ]]; then
+    while read -r file; do
+      [[ -f "$file" && "$(realpath "$file")" == "$file" && "$file" == /etc/letsencrypt/accounts/*/regr.json ]] || continue
+      local account_dir="${file%/*}"
+      if grep -Fqs "${account_dir##*/}" /etc/letsencrypt/renewal/*.conf; then continue; fi
+      rm -f -- "$file" "$account_dir/meta.json" "$account_dir/private_key.json"
+      while [[ "$account_dir" == /etc/letsencrypt/accounts/* ]] && rmdir "$account_dir" 2>/dev/null; do
+        account_dir="${account_dir%/*}"
+      done
+    done < "$ledger/accounts.added"
+  fi
+  if [[ -e "$ledger/nginx.used" ]] &&
+     [[ ! -f "$ledger/nginx.service.active" || ( -f "$ledger/basil-nginx.sh.after" && ! -f "$ledger/basil-nginx.sh.before" ) ]] &&
+     compgen -G '/etc/nginx/conf.d/basil-*.conf' >/dev/null; then
+    echo 'Another AosWork site uses this Nginx instance. Host cleanup deferred.'
+    return 1
+  fi
+  for file in "${hostfiles[@]}"; do
+    name="${file##*/}"
+    [[ -f "$ledger/$name.after" && -e "$file" ]] || continue
+    actual="$(sha256sum "$file" | cut -d' ' -f1)"
+    [[ "$actual" == "$(cat "$ledger/$name.after")" ]] || { echo "Host file changed: $file"; return 1; }
+    if [[ -f "$ledger/$name.before" ]]; then cp -p "$ledger/$name.before" "$file"; else rm -- "$file"; fi
+    rm "$ledger/$name.after"
+  done
+  for unit in "${units[@]}"; do
+    case "$unit" in
+      docker*|containerd*) [[ -e "$ledger/docker.used" ]] || continue ;;
+      *) [[ -e "$ledger/nginx.used" ]] || continue ;;
+    esac
+    if [[ ! -f "$ledger/$unit.active" ]] && systemctl is-active --quiet "$unit"; then systemctl stop "$unit"; fi
+    if [[ ! -f "$ledger/$unit.enabled" ]] && systemctl is-enabled --quiet "$unit" 2>/dev/null; then systemctl disable "$unit"; fi
+  done
+  if (( ${#packages[@]} )); then
+    touch "$ledger/purge-started"
+    DEBIAN_FRONTEND=noninteractive apt-get -y purge "${packages[@]}"
+  fi
+  if [[ -e "$ledger/purge-started" ]] && grep -Eq '^(docker-ce|docker.io)$' "$ledger/packages"; then
+      for file in /var/lib/docker /var/lib/containerd; do
+        if [[ "$file" == /var/lib/docker && ! -f "$ledger/docker.default-root" ]]; then continue; fi
+        if [[ "$file" == /var/lib/containerd ]] && ! grep -Eq '^(containerd.io|containerd)$' "$ledger/packages"; then continue; fi
+        command -v findmnt >/dev/null || { echo 'Install findmnt to verify mount boundaries.'; return 1; }
+        [[ ! -e "$ledger/${file##*/}.existed" && ! -L "$file" && -d "$file" ]] || continue
+        if findmnt -rn -o TARGET | awk -v p="$file" '$0==p || index($0,p"/")==1 {found=1} END {exit !found}'; then
+          echo "Unmount $file before cleanup."; return 1
+        fi
+        rm -rf --one-file-system -- "$file"
+      done
+  fi
+  if [[ -e "$ledger/purge-started" && ! -e "$ledger/docker.group-existed" ]] &&
+     grep -Eq '^(docker-ce|docker.io)$' "$ledger/packages"; then
+    local entry gid
+    entry="$(getent group docker || true)"
+    if [[ -n "$entry" && -z "${entry##*:}" ]]; then
+      gid="$(cut -d: -f3 <<<"$entry")"
+      if ! getent passwd | awk -F: -v g="$gid" '$4==g {used=1} END {exit !used}'; then groupdel docker; fi
+    fi
+  fi
+  if [[ -e "$ledger/nginx.used" ]]; then
+    for file in /var/www/basil-acme/.well-known/acme-challenge /var/www/basil-acme/.well-known /var/www/basil-acme; do
+      if [[ ! -f "$ledger/acme.existed" && -d "$file" ]]; then rmdir "$file" 2>/dev/null || true; fi
+    done
+  fi
+  rm -r -- "$ledger"
+  rmdir "$base" 2>/dev/null || true
+}
+
+case "${1:-}" in
+  setup) init ;;
+  packages) shift; install_packages "$@" ;;
+  mark) init; case "$2" in docker|nginx) touch "$ledger/$2.used" ;; *) exit 2 ;; esac ;;
+  file) init; for file in "${hostfiles[@]}"; do
+          if [[ "$file" == "$2" ]]; then sha256sum "$file" | cut -d' ' -f1 > "$ledger/${file##*/}.after"; exit 0; fi
+        done; exit 2 ;;
+  cert) init; accounts > "$ledger/accounts.before-request"; [[ "$2" =~ ^[a-zA-Z0-9.-]+$ ]] || exit 2
+        if [[ ! -e "/etc/letsencrypt/renewal/$2.conf" ]] && ! grep -Fqx "$2" "$ledger/certs" 2>/dev/null; then
+          printf '%s\n' "$2" >> "$ledger/certs"
+        fi ;;
+  cert-done) if [[ -f "$ledger/accounts.before-request" ]]; then
+               accounts > "$ledger/accounts.after-request"
+               comm -13 "$ledger/accounts.before-request" "$ledger/accounts.after-request" >> "$ledger/accounts.added"
+             fi ;;
+  preview) if [[ -d "$ledger" ]]; then
+             printf 'Host packages installed by this deployment:\n'; installed_owned
+             if [[ -s "$ledger/certs" ]]; then printf 'Certificates created by this deployment:\n'; cat "$ledger/certs"; fi
+           else echo 'No host installation record. Existing host software will be retained.'; fi ;;
+  recover) if [[ -f "$ledger/ready" && ! -f "$BASIL_DEPLOY_DIR/.aos-install/baseline.json" ]]; then
+             bash "$0" preview
+             read -r -p "To undo host setup, type DELETE $BASIL_DEPLOY_DIR: " answer || exit 0
+             if [[ "$answer" == "DELETE $BASIL_DEPLOY_DIR" ]]; then cleanup; fi
+           fi ;;
+  cleanup) cleanup ;;
+  *) exit 2 ;;
+esac
+AOS_EMBEDDED_FILE_END
 cat > "$SUPPORT_DIR/release-install.py" <<'AOS_EMBEDDED_FILE_END'
 """Install public deployment files while preserving the operator's local configuration."""
 import argparse
+import deployment_state
 import gzip
 import fcntl
 import hashlib
@@ -26,7 +331,9 @@ from urllib.parse import urlsplit
 
 RELEASES = 'https://github.com/basilos-ai/aos-work-release/releases'
 # Newest first. Add the new tag here when preparing a release.
-VERSIONS = {
+VERSIONS = {'v2026.11.19': None}
+# Keep verification for pending installs that resume from a manually uploaded archive.
+ARCHIVED_VERSIONS = {
     'v2026.11.18.2': None,
     'v2026.11.18.1': 'e328e235b52651e9e43c857767e4b844944dd1efba61624f7525767c0c705f76',
     'v2026.11.18': 'b7f19f50f985f9fe93ba963cc7cdbbf6310fdc678faa5d1d76970e3b712d3429',
@@ -45,11 +352,13 @@ MAX_BYTES = 16 * 1024 * 1024
 
 def choose():
     tags = list(VERSIONS)[:5]
-    print('选择安装包版本：')
+    print('Select a server package')
     for i, tag in enumerate(tags, 1):
         print(f'  {i}) {tag}  {RELEASES}/download/{tag}/deploy.tar.gz')
-    print(f'更多历史版本：{RELEASES}\n也可粘贴可信来源的 HTTPS 安装包直链（deploy.tar.gz 或 deploy.tar）。')
-    value = input('版本序号 / 安装包直链（0 返回）：').strip()
+    if not tags:
+        print('No published releases are listed.')
+    print(f'GitHub Releases: {RELEASES}\nOr paste a trusted HTTPS link to deploy.tar.gz or deploy.tar.')
+    value = input('Version number or package URL (0 to return): ').strip()
     if value == '0':
         return None
     if value.isdecimal() and 1 <= int(value) <= len(tags):
@@ -64,26 +373,26 @@ def choose():
 def check_url(url):
     parsed = urlsplit(url)
     if parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password:
-        raise ValueError('请输入可信的 HTTPS 安装包直链。')
+        raise ValueError('Enter a trusted HTTPS package URL.')
     name = PurePosixPath(parsed.path).name
     if name not in ('deploy.tar.gz', 'deploy.tar'):
-        raise ValueError('请粘贴 Release 附件 deploy.tar.gz 或 deploy.tar 的直链。')
+        raise ValueError('Paste the release asset URL for deploy.tar.gz or deploy.tar.')
     return name
 
 
 def check_path(root, path):
     # A live deployment may contain user-created symlinks.
     if path.resolve() != path or root not in path.parents:
-        raise ValueError(f'拒绝写入符号链接或部署目录之外的路径：{path}')
+        raise ValueError(f'Refusing symlink or path outside the deployment directory: {path}')
 
 
 def unpack(archive, staging):
     if archive.stat().st_size > MAX_BYTES:
-        raise ValueError('部署文件包超过大小上限。请选择 deploy.tar.gz 或 deploy.tar。')
+        raise ValueError('Archive is too large. Select deploy.tar.gz or deploy.tar.')
     if archive.name.endswith('.gz'):
         with gzip.open(archive, 'rb') as stream:
             if len(stream.read(MAX_BYTES + 1)) > MAX_BYTES:
-                raise ValueError('压缩包展开后过大。')
+                raise ValueError('Uncompressed archive exceeds the size limit.')
     total = 0
     seen = set()
     with tarfile.open(archive, 'r:*') as bundle:
@@ -91,11 +400,11 @@ def unpack(archive, staging):
             path = PurePosixPath(entry.name)
             if (path.is_absolute() or '..' in path.parts or path in seen or
                     not (entry.isfile() or entry.isdir()) or len(seen) >= 256):
-                raise ValueError('压缩包含有不支持或重复的条目。')
+                raise ValueError('Unsupported or duplicate archive entry.')
             seen.add(path)
             total += entry.size
             if total > MAX_BYTES:
-                raise ValueError('解压内容超过大小上限。')
+                raise ValueError('Extracted data exceeds the size limit.')
             if entry.isfile() and str(path) in MODERN | LEGACY:
                 dest = staging / path
                 dest.parent.mkdir(parents=True, exist_ok=True)
@@ -105,7 +414,11 @@ def unpack(archive, staging):
     for layout in (MODERN, LEGACY):
         if all((staging / n).is_file() for n in layout):
             return layout
-    raise ValueError('安装包缺少部署脚本、环境文件或 Compose 配置。')
+    raise ValueError('Package is missing deployment scripts, environment files or Compose definitions.')
+
+
+def env_defaults(lines):
+    return dict(line.split('=', 1) for line in lines if line and not line.lstrip().startswith('#') and '=' in line)
 
 
 def install(root, folder, url):
@@ -113,7 +426,8 @@ def install(root, folder, url):
     archive = folder / name
     check_path(root, archive)
     digest = None
-    for tag, known in VERSIONS.items():
+    known_versions = {**ARCHIVED_VERSIONS, **VERSIONS}
+    for tag, known in known_versions.items():
         if url == f'{RELEASES}/download/{tag}/deploy.tar.gz':
             digest = known
     sums = folder / 'SHA256SUMS'
@@ -122,50 +436,75 @@ def install(root, folder, url):
         lines = sums.read_text().splitlines()
         matches = [m[1] for line in lines if (m := re.fullmatch(r'([0-9a-f]{64})  '+re.escape(name), line))]
         if len(matches) != 1 or (digest and digest != matches[0]):
-            raise ValueError('SHA256SUMS 与所选附件不匹配。')
+            raise ValueError('SHA256SUMS does not match the selected asset.')
         digest = matches[0]
     if archive.stat().st_size > MAX_BYTES:
-        raise ValueError('请选择部署文件包，当前文件过大。')
+        raise ValueError('Select a deployment package within the size limit.')
     if digest and hashlib.sha256(archive.read_bytes()).hexdigest() != digest:
-        raise ValueError('SHA-256 不匹配，请重新上传所选版本。')
+        raise ValueError('SHA-256 mismatch. Upload the selected release again.')
     with tempfile.TemporaryDirectory(dir=folder) as tmp:
         stage = Path(tmp)
         layout = unpack(archive, stage)
         subprocess.run(['bash', '-n', str(stage / 'deploy.sh')], check=True)
         tag = re.fullmatch(re.escape(RELEASES) + r'/download/([^/]+)/deploy\.tar(?:\.gz)?', url)
-        if tag and tag[1] in VERSIONS and VERSIONS[tag[1]] is None:
+        if tag and tag[1] in known_versions and known_versions[tag[1]] is None:
             marker = '# aos-work deployment release: ' + tag[1]
             if marker not in (stage / 'deploy.sh').read_text().splitlines():
-                raise ValueError('包内版本与选择的 Release 不符。')
-        # Validate every destination before changing any installed file. Move the entry point last.
-        targets = {n: root / ('.aos-selected.sh' if n == 'deploy.sh' else n) for n in layout}
-        for dest in targets.values():
+                raise ValueError('Package version does not match the selected release.')
+        selection = root / '.aos-install/selected.json'
+        check_path(root, selection)
+        previous = json.loads(selection.read_text()).get('defaults', {}) if selection.exists() else {}
+        new_defaults = {}
+        # Install the selected Compose definitions and version defaults. Keep the V1 launcher
+        # for all versions, including older releases with different menu numbers.
+        inputs = {name: stage / name for name in MODERN if name != 'deploy.sh'}
+        if layout == LEGACY:
+            inputs['compose/middleware.yaml'] = stage / 'docker-compose.middleware.yaml'
+            for name in ENV:
+                inputs[name] = stage / (name + '.example')
+        staged = []
+        for name, src in sorted(inputs.items()):
+            dest = root / name
             check_path(root, dest)
             if dest.exists() and not dest.is_file():
-                raise ValueError(f'文件位置被占用：{dest}')
-        for n in sorted(layout, key=lambda n: n == 'deploy.sh'):
-            dest = targets[n]
-            if n in ENV | WORKBENCH and dest.exists():
+                raise ValueError(f'Destination is not a regular file: {dest}')
+            if name in ENV:
+                lines = src.read_text().splitlines()
+                new_defaults[name] = env_defaults(lines)
+                if dest.exists():
+                    template = Path(__file__).parent / (name + '.example')
+                    defaults = previous.get(name, env_defaults(template.read_text().splitlines()))
+                    # Carry local overrides (including custom keys) across package versions.
+                    live = env_defaults(dest.read_text().splitlines())
+                    edited = {k: f'{k}={v}' for k, v in live.items() if defaults.get(k) != v}
+                    lines = [edited.pop(line.partition('=')[0], line) for line in lines]
+                    src.write_text('\n'.join([*lines, *edited.values()]) + '\n')
+            if name in WORKBENCH and dest.exists():
                 continue
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            os.replace(stage / n, dest)
-        if layout == LEGACY:
-            # Keep configured credentials and local service choices across layout changes.
-            p = root / '.env.middleware'
-            check_path(root, p)
-            if p.exists():
-                text = p.read_text()
-                updated = re.sub(r'^(COMPOSE_FILE=[\x27"]?)compose/middleware\.yaml', r'\1docker-compose.middleware.yaml', text, flags=re.M)
-                if updated != text:
-                    new = stage / 'middleware.env'
-                    new.write_text(updated)
-                    new.chmod(0o600)
-                    os.replace(new, p)
+            staged.append((src, dest))
+        applied = []
+        try:
+            for index, (src, dest) in enumerate(staged):
+                backup = None
+                if dest.exists():
+                    backup = stage / f'backup-{index}'
+                    shutil.copy2(dest, backup)
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(src, dest)
+                applied.append((dest, backup))
+            deployment_state.save(selection, {'url': url, 'defaults': new_defaults})
+        except BaseException:
+            for dest, backup in reversed(applied):
+                if backup:
+                    os.replace(backup, dest)
+                else:
+                    dest.unlink(missing_ok=True)
+            raise
 
 
 def offline(folder, name):
-    print(f'请访问 {RELEASES} 手动下载同一版本。\n上传到：{folder / name}\n'
-          f'可将同一 Release 的 SHA256SUMS 一起上传到 {folder}。上传完成后再次运行 sudo bash deploy.sh。')
+    print(f'Download the selected version from {RELEASES}.\nUpload it to {folder / name}.\n'
+          f'Optionally upload its SHA256SUMS to {folder}. Run sudo bash deploy.sh again to resume.')
 
 
 def run(root, resume):
@@ -199,7 +538,7 @@ def run(root, resume):
             if resume:
                 offline(folder, name)
                 return False
-            print('正在下载：' + url, flush=True)
+            print('Downloading: ' + url, flush=True)
             try:
                 with tempfile.NamedTemporaryFile(dir=folder, delete=False) as f:
                     partial = Path(f.name)
@@ -216,10 +555,10 @@ def run(root, resume):
         try:
             install(root, folder, url)
         except (OSError, ValueError, EOFError, tarfile.TarError, subprocess.CalledProcessError) as error:
-            print(f'安装包未通过检查：{error}')
+            print(f'Package validation failed: {error}')
             offline(folder, name)
             return False
-        print('已解压所选部署包，开始配置并安装 Studio + Workbench。', flush=True)
+        print('Server package ready. Select Deploy AosWork to start services.', flush=True)
         pending.unlink()
         return True
 
@@ -230,7 +569,7 @@ if __name__ == '__main__':
     try:
         ready = run(Path(os.environ['BASIL_DEPLOY_DIR']).resolve(), parser.parse_args().action == 'resume')
     except (ValueError, KeyError, OSError, EOFError) as error:
-        parser.exit(1, f'安装包处理失败：{error}\n')
+        parser.exit(1, f'Package installation failed: {error}\n')
     # 2 means cancelled or waiting for upload.
     raise SystemExit(0 if ready else 2)
 AOS_EMBEDDED_FILE_END
@@ -244,6 +583,7 @@ import re
 import shutil
 import subprocess
 import sys
+import deployment_state
 
 support = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location('ops', support / 'deploy-support.py')
@@ -267,7 +607,7 @@ def local_docker():
     if os.environ.get('DOCKER_CONTEXT') or not endpoint:
         endpoint = docker('context', 'inspect', '--format', '{{.Endpoints.docker.Host}}')
     if not endpoint.startswith('unix://'):
-        raise ValueError('清理需要当前服务器的本地 Docker Unix Socket。')
+        raise ValueError('Cleanup requires a local Docker Unix socket.')
 
 
 def local_path(value):
@@ -278,8 +618,9 @@ def local_path(value):
 
 
 def paths_to_reset(root, env):
-    if len(root.parts) < 3 or root == Path.home() or not (root / 'docker-compose.workbench.yaml').is_file():
-        raise ValueError('当前目录不是可识别的独立部署目录。')
+    if len(root.parts) < 3 or root == Path.home() or not ((root / 'docker-compose.workbench.yaml').is_file() or (root / deployment_state.STATE).is_file()):
+        raise ValueError('Unrecognized deployment directory.')
+    baseline = deployment_state.read(root)
     files = [root / n for n in ('data/postgresql', 'data/redis', 'data/rabbitmq', 'data/minio',
                                  'data/studio-logs', 'workbench/frontend-logs', '.domains.json', '.aos-install/pending.json')]
     minio = Path(env['middleware'].get('MINIO_DATA_HOST_PATH', './data/minio'))
@@ -288,19 +629,19 @@ def paths_to_reset(root, env):
         files.append(custom)
     storage = root / 'workbench/storage'
     if storage.resolve() != storage:
-        raise ValueError('Workbench 存储路径包含符号链接，请先核对。')
+        raise ValueError('Workbench storage path contains a symlink.')
     if storage.is_dir():
         for child in storage.iterdir():
             if child.name not in ('templates', 'nginx'):
                 files.append(child)
             elif child.is_symlink():
-                raise ValueError(f'请先核对符号链接：{child}')
+                raise ValueError(f'Review the symlink before cleanup: {child}')
             elif child.is_dir():
                 keep = 'AGENTS.md' if child.name == 'templates' else 'runtime-nginx.conf'
                 files.extend(p for p in child.iterdir() if p.name != keep)
     for g in GROUPS:
         files.append(root / ('.env.' + g))
-        files.extend(root.glob('.env.' + g + '.bak*'))
+        files.extend(p for p in root.glob('.env.' + g + '.bak*') if p.name not in baseline.get('original_backups', []))
     paths = sorted({p for p in files if p.exists() or p.is_symlink()})
     mounts = set()
     if Path('/proc/self/mountinfo').is_file():
@@ -308,7 +649,7 @@ def paths_to_reset(root, env):
             mounts.add(Path(re.sub(r'\\([0-7]{3})', lambda m: chr(int(m[1], 8)), row.split()[4])))
     for p in paths:
         if p.resolve() != p or p.is_mount() or any(m == p or p in m.parents for m in mounts):
-            raise ValueError(f'清理范围包含链接或挂载点，请先核对并卸载：{p}')
+            raise ValueError(f'Cleanup path contains a symlink or mount: {p}')
     return [p for p in paths if not any(parent in paths for parent in p.parents)]
 
 
@@ -343,7 +684,7 @@ def inventory(root):
             others.append(c)
             for p in paths:
                 if any(src == p or p in src.parents or src in p.parents for src in mounts):
-                    raise ValueError(f'其他容器 {c["Name"]} 也挂载了 {p}，请先处理共享数据。')
+                    raise ValueError(f'Another container {c["Name"]} also mounts {p}. Resolve shared storage before cleanup.')
     used_images = {c['Image'] for c in others}
     held_vols = {m['Name'] for c in others for m in c['Mounts'] if m['Type'] == 'volume'}
     volumes = {m['Name'] for c in own for m in c['Mounts'] if m['Type'] == 'volume'}
@@ -358,14 +699,14 @@ def inventory(root):
         if (label.get(OWNER) == str(root) or label.get(PROJECT) in projects) and not set(net.get('Containers') or {}) - ids:
             networks.append((net['Id'], net['Name']))
         else:
-            kept.append('共享或外部网络 ' + net['Name'])
+            kept.append('Shared or external network: ' + net['Name'])
     private_volumes = []
     for volume in objects('volume', sorted(volumes)):
         name = volume['Name']
         if name not in held_vols and ((volume.get('Labels') or {}).get(PROJECT) in projects or re.fullmatch('[0-9a-f]{64}', name)):
             private_volumes.append(name)
         else:
-            kept.append('共享或外部卷 ' + name)
+            kept.append('Shared or external volume: ' + name)
     images.update(c['Config']['Image'] for c in own)
     used_by_own = {c['Image'] for c in own}
     remove_images = []
@@ -375,17 +716,33 @@ def inventory(root):
         tags = tags_by_id.setdefault(image_id, set())
         if not tag.endswith(':<none>'):
             tags.add(tag)
+    baseline = deployment_state.read(root)
+    initial_images = set(baseline.get('initial_images', []))
+    acquired = set(baseline.get('acquired_images', []))
+    original_tags = dict(row.rsplit(' ', 1) for row in initial_images)
+    restore_tags = []
     for image_id, tags in tags_by_id.items():
-        refs = (tags & images)
-        if not tags and image_id in used_by_own:
+        eligible = not baseline or baseline.get('legacy') or image_id in used_by_own
+        refs = {tag for tag in tags & images if eligible and f'{tag} {image_id}' not in initial_images}
+        refs.update(tag for tag in tags if f'{tag} {image_id}' in acquired - initial_images)
+        owned_id = image_id in used_by_own or any(row.endswith(' ' + image_id) for row in acquired)
+        if not tags and owned_id and not any(row.endswith(' ' + image_id) for row in initial_images):
             refs.add(image_id)
         if image_id in used_images:
-            kept.extend('其他容器使用镜像 ' + ref for ref in refs)
+            kept.extend('Image used by another container: ' + ref for ref in refs)
         else:
-            remove_images.extend((ref, image_id) for ref in refs)
+            for ref in refs:
+                original = original_tags.get(ref)
+                if original and original != image_id:
+                    if original in tags_by_id:
+                        restore_tags.append((ref, original))
+                    else:
+                        kept.append('Original image unavailable; retaining current tag: ' + ref)
+                        continue
+                remove_images.append((ref, image_id))
     custom = (root / env['middleware'].get('MINIO_DATA_HOST_PATH', './data/minio')).resolve()
     if not custom.is_relative_to(root / 'data'):
-        kept.append('自定义对象存储路径 ' + str(custom))
+        kept.append('Custom storage path: ' + str(custom))
     proxies = []
     state = root / '.domains.json'
     if state.is_file():
@@ -398,28 +755,69 @@ def inventory(root):
             site = domain.NGINX_DIR / ('basil-' + target + '.conf')
             if site.is_file():
                 expected = domain.nginx_text(settings['domain'], settings['port'], True)
-                if not site.is_symlink() and site.read_text() == expected:
+                # Previous launchers emitted the same HTTPS proxy without the TLS challenge location.
+                legacy = expected[:expected.index('    listen 443 ssl;')] + expected[expected.index('    listen 443 ssl;'):].replace(
+                    expected[expected.index('    location ^~'):expected.index('    location /')], '', 1)
+                if not site.is_symlink() and site.read_text() in (expected, legacy):
                     proxies.append(site)
                 else:
-                    kept.append('已另行修改的 Nginx 配置 ' + str(site))
+                    kept.append('Modified Nginx site: ' + str(site))
     return dict(containers=containers, proxies=sorted(proxies), networks=sorted(networks), volumes=sorted(private_volumes),
-                images=sorted(remove_images), paths=paths, kept=sorted(kept))
+                images=sorted(remove_images), restore_tags=sorted(restore_tags), paths=paths, kept=sorted(kept))
+
+
+def host_action(root, action):
+    if sys.platform.startswith('linux'):
+        subprocess.run(['bash', str(support / 'host-state.sh'), action], check=True,
+                       env=dict(os.environ, BASIL_DEPLOY_DIR=str(root)))
+
+
+def finish_reset(root):
+    state = deployment_state.read(root)
+    if state:
+        deployment_state.restore(root, state)
+    (root / '.aos-selected.sh').unlink(missing_ok=True)
+    cache = root / '.aos-install'
+    if cache.is_dir():
+        for p in cache.iterdir():
+            if p.is_symlink():
+                raise ValueError(f'Unexpected link in package cache: {p}')
+            if p.is_dir() and re.fullmatch('[0-9a-f]{12}', p.name):
+                for name in ('deploy.tar.gz', 'deploy.tar', 'SHA256SUMS'):
+                    (p / name).unlink(missing_ok=True)
+                if not any(p.iterdir()):
+                    p.rmdir()
+        for name in ('lock', 'pending.json', 'selected.json', 'baseline.json'):
+            (cache / name).unlink(missing_ok=True)
+        deployment_state.save(cache / 'cleanup-pending', 'local-restored')
+    host_action(root, 'cleanup')
+    if cache.is_dir():
+        (cache / 'cleanup-pending').unlink(missing_ok=True)
+        if not any(cache.iterdir()):
+            cache.rmdir()
+    print('Deployment removed. Run the launcher again to start a new installation.')
 
 
 def reset(root):
+    marker = root / '.aos-install/cleanup-pending'
+    if marker.is_file():
+        if input(f'Resume cleanup? Type DELETE {root}: ') == f'DELETE {root}':
+            finish_reset(root)
+        return
     local_docker()
     plan = inventory(root)
-    print(f'完全清理当前部署 {root}。本地数据库、上传文件及密钥将永久删除。')
-    for title, entries in [('容器', [v for _, v in plan['containers']]), ('镜像', [v for v, _ in plan['images']]),
-                           ('卷', plan['volumes']), ('网络', [v for _, v in plan['networks']]),
-                           ('部署创建的 Nginx 站点', plan['proxies']), ('本地配置和数据', plan['paths']), ('保留', plan['kept'])]:
-        print(title + '：' + ('、'.join(map(str, entries)) or '无'))
-    print('保留安装脚本、部署模板、已下载安装包、外部服务及宿主机证书。')
-    if input(f'输入 DELETE {root} 确认，其他输入取消：') != f'DELETE {root}':
-        print('已取消。')
+    print(f'Delete deployment in {root}. Local databases, uploads and secrets will be permanently removed.')
+    for title, entries in [('Containers', [v for _, v in plan['containers']]), ('Image', [v for v, _ in plan['images']]),
+                           ('Restore image tags', [v for v, _ in plan['restore_tags']]), ('Volumes', plan['volumes']), ('Networks', [v for _, v in plan['networks']]),
+                           ('Managed Nginx sites', plan['proxies']), ('Local configuration and data', plan['paths']), ('Retained', plan['kept'])]:
+        print(title + ': ' + (', '.join(map(str, entries)) or 'none'))
+    host_action(root, 'preview')
+    print('The launcher and externally managed resources will be retained.')
+    if input(f'Type DELETE {root} to confirm: ') != f'DELETE {root}':
+        print('Cancelled.')
         return
     if inventory(root) != plan:
-        raise ValueError('部署资源发生变化，请重新预览。')
+        raise ValueError('Deployment resources changed. Review the inventory again.')
     if plan['proxies']:
         saved = {p: p.read_bytes() for p in plan['proxies']}
         try:
@@ -432,7 +830,7 @@ def reset(root):
                 site.write_bytes(data)
             raise
     for cid, name in plan['containers']:
-        print('停止 ' + name, flush=True)
+        print('Stopping ' + name, flush=True)
         docker('stop', cid)
     for cid, _ in plan['containers']:
         docker('rm', cid)
@@ -442,30 +840,36 @@ def reset(root):
         docker('network', 'rm', nid)
     for ref, image_id in plan['images']:
         if docker('image', 'inspect', '--format', '{{.Id}}', ref) != image_id:
-            raise ValueError(f'镜像标签已变化，请重新预览：{ref}')
-        docker('image', 'rm', ref)
+            raise ValueError(f'Image tag changed. Review the inventory again: {ref}')
+        original = dict(plan['restore_tags']).get(ref)
+        if original:
+            docker('tag', original, ref)
+        else:
+            docker('image', 'rm', ref)
     # Recheck consumers before unlinking data; a concurrently created sandbox must be stopped first.
     remaining = inventory(root)
     if remaining['containers'] or remaining['paths'] != plan['paths']:
-        raise ValueError('数据或容器状态已变化，请重新预览后继续清理。')
+        raise ValueError('Data or containers changed. Review the inventory before continuing.')
     for path in plan['paths']:
         if path.is_dir():
             shutil.rmtree(path)
         else:
             path.unlink()
-    print('当前部署已清理。重新选择菜单 1 可从头配置并安装。')
+    deployment_state.save(marker, True)
+    finish_reset(root)
 
 
 if __name__ == '__main__':
     try:
         reset(Path(os.environ['BASIL_DEPLOY_DIR']).resolve())
     except (OSError, ValueError, EOFError, subprocess.CalledProcessError) as error:
-        sys.exit(f'清理未完成：{error}')
+        sys.exit(f'Cleanup incomplete: {error}')
 AOS_EMBEDDED_FILE_END
 cat > "$SUPPORT_DIR/deploy-support.py" <<'AOS_EMBEDDED_FILE_END'
 #!/usr/bin/env python3
 """Deployment operations. No third-party Python dependencies; never source .env as code."""
 import argparse
+import deployment_state
 import datetime
 import json
 import importlib.util
@@ -501,13 +905,13 @@ def capture(args):
     try:
         return run(args, capture_output=True, text=True).stdout
     except subprocess.CalledProcessError:
-        raise ValueError('命令检查失败：' + ' '.join(args[:3]) + '；请检查配置、Docker 权限或服务状态。') from None
+        raise ValueError('Command failed: ' + ' '.join(args[:3]) + '. Check configuration, Docker permissions and service status.') from None
 
 
 def ask(label, default=''):
     value = input(f'{label}' + (f' [{default}]' if default else '') + ': ').strip() or default
     if not value:
-        raise ValueError('输入为空，操作已取消。')
+        raise ValueError('Empty input. Cancelled.')
     return value
 
 
@@ -522,11 +926,11 @@ def read_env(path):
             continue
         match = re.fullmatch(r'([A-Za-z_][A-Za-z_0-9]*)=(.*)', line)
         if not match or match[1] in result:
-            raise ValueError(f'{path.name}:{n} 格式错误或变量重复（不输出变量值）。')
+            raise ValueError(f'{path.name}:{n}: invalid or duplicate variable.')
         value = match[2]
         if value.startswith(('"', "'")):
             if len(value) < 2 or value[-1] != value[0]:
-                raise ValueError(f'{path.name}:{n} 引号未闭合。')
+                raise ValueError(f'{path.name}:{n}: unmatched quote.')
             value = value[1:-1]
         result[match[1]] = value
     return result
@@ -534,7 +938,7 @@ def read_env(path):
 
 def atomic_write(path, text):
     if path.is_symlink():
-        raise ValueError(f'拒绝写入符号链接：{path}')
+        raise ValueError(f'Refusing to write to symlink: {path}')
     fd, temp = tempfile.mkstemp(dir=path.parent, prefix=path.name + '.tmp.')
     with os.fdopen(fd, 'w') as f:
         f.write(text)
@@ -566,7 +970,7 @@ def edit_env(path, changes):
 
 def encode(value):
     if any(c in value for c in "'\n\r"):
-        raise ValueError('环境变量不能包含单引号或换行。')
+        raise ValueError('Environment values cannot contain single quotes or newlines.')
     return value if re.fullmatch(r'[A-Za-z0-9_./,:@+-]*', value) else "'" + value + "'"
 
 
@@ -580,7 +984,7 @@ def compose(group):
             if file == 'docker-compose.middleware.yaml':  # previously shipped layout
                 file = 'compose/middleware.yaml'
             if file not in ['compose/middleware.yaml', 'compose/db.yaml', 'compose/cache.yaml', 'compose/mq.yaml', 'compose/storage.yaml']:
-                raise ValueError('COMPOSE_FILE 包含不支持的文件：' + file)
+                raise ValueError('Unsupported COMPOSE_FILE entry: ' + file)
             args += ['-f', str(ROOT / file)]
     return args
 
@@ -598,26 +1002,27 @@ def check_files():
     for name in files:
         p = ROOT / name
         if not p.is_file() or p.is_symlink():
-            raise ValueError('部署包缺少普通文件：' + name)
+            raise ValueError('Missing regular file: ' + name)
+    prepare_envs()
+    print('Deployment files and environment syntax are valid.')
+
+
+def prepare_envs():
     for group in PORTS:
         p, template = env_path(group), SUPPORT / f'.env.{group}.example'
         if p.is_symlink() or (p.exists() and not p.is_file()):
-            raise ValueError('环境文件必须是普通文件：' + p.name)
+            raise ValueError('Expected a regular environment file: ' + p.name)
         expected = read_env(template)
         if not p.exists():
             shutil.copyfile(template, p)
             p.chmod(0o600)
-            print('已创建 ' + p.name)
+            print('Created ' + p.name)
         p.chmod(0o600)
         actual = read_env(p)
         missing = set(expected) - set(actual)
         if missing:
-            print(p.name + ' 缺少变量，将从模板补齐：' + ', '.join(sorted(missing)))
+            print(p.name + ': adding missing template keys: ' + ', '.join(sorted(missing)))
             edit_env(p, {k: expected[k] for k in sorted(missing)})
-        unresolved = [k for k, v in read_env(p).items() if 'CHANGE_ME' in v]
-        if unresolved:
-            print(p.name + ' 待配置：' + ', '.join(unresolved))
-    print('部署文件结构和环境文件格式检查通过。')
 
 
 def image_exists(image):
@@ -625,40 +1030,46 @@ def image_exists(image):
                           stderr=subprocess.DEVNULL).returncode == 0
 
 
-def pull_image(image, force=False):
+def pull_image(image, force=False, *, interactive=True):
     if not force and image_exists(image):
-        print('使用本地镜像：' + image, flush=True)
+        print('Using local image: ' + image, flush=True)
         return
     while True:
-        print('拉取镜像（单次最多 180 秒）：' + image, flush=True)
+        print('Pulling image (180s timeout): ' + image, flush=True)
         try:
             result = subprocess.run(['docker', 'pull', image], timeout=180)
             if result.returncode == 0:
+                deployment_state.record_image(ROOT, image)
                 return
         except subprocess.TimeoutExpired:
-            print('镜像下载超时。')
-        print('1) 重试  2) 导入离线 docker save 归档后继续  3) 从可信镜像仓库拉取并映射为原标签  0) 返回')
-        choice = ask('请选择', '0')
+            print('Image download timed out.')
+        if not interactive:
+            raise ValueError(f'Could not obtain {image}. Prepare the image and retry.')
+        print('1) Retry  2) Load offline image archive  3) Pull from a trusted registry  0) Back')
+        choice = ask('Select', '0')
         if choice == '0':
-            raise ValueError('镜像未就绪，停止启动服务。已有配置与容器保留。')
+            raise ValueError('Image unavailable. Service startup stopped.')
         if choice == '2':
-            archive = Path(ask('镜像归档绝对路径')).expanduser()
+            archive = Path(ask('Absolute path to image archive')).expanduser()
             if not archive.is_file():
-                print('归档不存在。'); continue
+                print('Archive not found.'); continue
             run(['docker', 'load', '-i', str(archive)])
             if image_exists(image):
+                deployment_state.record_image(ROOT, image)
                 return
-            print('归档没有所需标签：' + image)
+            print('Archive does not contain the required tag: ' + image)
         elif choice == '3':
-            alternate = ask('输入你确认可信的完整镜像名:tag（或 @sha256）')
+            alternate = ask('Trusted image reference with tag or digest')
             if alternate.startswith('-') or any(c.isspace() for c in alternate):
-                raise ValueError('镜像名称无效。')
+                raise ValueError('Invalid image name.')
             try:
                 run(['docker', 'pull', alternate], timeout=180)
                 run(['docker', 'tag', alternate, image])
+                for ref in (alternate, image):
+                    deployment_state.record_image(ROOT, ref)
                 return
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
-                print('备用镜像拉取失败。')
+                print('Failed to pull the alternate image.')
 
 
 def port_available(port):
@@ -683,6 +1094,9 @@ def port_owners():
         for c in json.loads(capture(['docker', 'inspect'] + ids)):
             labels = c['Config'].get('Labels') or {}
             owner = (labels.get('com.docker.compose.project'), labels.get('com.docker.compose.service'))
+            wd = labels.get('com.docker.compose.project.working_dir', '').removeprefix('/host_mnt/')
+            if wd and Path('/' + wd.lstrip('/')) not in (ROOT, ROOT / 'compose'):
+                owner = (wd, owner[1])
             for bindings in (c['NetworkSettings'].get('Ports') or {}).values():
                 for binding in bindings or []:
                     owners.setdefault(int(binding['HostPort']), set()).add(owner)
@@ -719,28 +1133,33 @@ def sync_port_urls(group, key, old, new):
     domain.refresh_port(ROOT, group, key, new)
 
 
-def ensure_ports(group, selected, cfg):
-    owners, reserved, changed = port_owners(), {}, False
+def ensure_ports(group, selected, cfg, *, interactive=True, owners=None, reserved=None):
+    owners = port_owners() if owners is None else owners
+    reserved = {} if reserved is None else reserved
+    changed = False
     for service in selected:
         spec = cfg['services'][service]
         for mapping in spec.get('ports', []):
-            old = int(mapping['published'])
+            published = str(mapping['published'])
+            old = int(published) if published.isdecimal() else 0
             key = next((k for k, target in PORTS.get(group, {}).get(service, []) if target is None or target == int(mapping['target'])), None)
             current = old
             while True:
                 owner = (cfg['name'], service)
                 active = owners.get(current, set())
-                free = active == {owner} or (not active and port_available(current))
-                if current not in reserved and free:
+                free = 1 <= current <= 65535 and (active == {owner} or (not active and port_available(current)))
+                if 1 <= current <= 65535 and current not in reserved and free:
                     break
                 if key is None:
-                    raise ValueError(f'{service} 端口 {current} 冲突，未找到对应 HOST_PORT 变量。')
-                print(f'{service} 的宿主机端口 {current} 被占用。')
-                val = ask('请输入新端口（1-65535），输入 0 取消')
+                    raise ValueError(f'Port {current} for {service} is in use and has no configurable host port.')
+                if not interactive:
+                    raise ValueError(f'Port {current} for {service} is in use. Resolve the conflict and retry.')
+                print(f'{group}/{service}: {key}={published if current == old else current} is invalid, reserved or in use.')
+                val = ask('New port (1-65535, 0 to cancel)')
                 if val == '0':
-                    raise ValueError('已取消端口调整。')
+                    raise ValueError('Port change cancelled.')
                 if not val.isdecimal() or not 1 <= int(val) <= 65535:
-                    print('端口无效。'); continue
+                    print('Invalid port.'); continue
                 current = int(val)
             reserved[current] = service
             if current != old:
@@ -752,16 +1171,42 @@ def ensure_ports(group, selected, cfg):
                     for path, text in snapshots.items():
                         atomic_write(path, text)
                     raise
-                print(f'已保存 {key}={current}，准备自动重试启动。')
+                print(f'Saved {key}={current}.')
                 changed = True
     return changed
+
+
+def preflight():
+    deployment_state.begin(ROOT)
+    prepare_envs()
+    owners = port_owners()
+    reserved = {80: 'HTTP', 443: 'HTTPS'}
+    external = {'postgresql': ('POSTGRESQL_HOST', 'db'), 'redis': ('REDIS_HOST', 'cache'),
+                'rabbitmq': ('RABBITMQ_HOST', 'mq'), 'minio': ('MINIO_HOST', 'storage')}
+    for group, services in PORTS.items():
+        env = read_env(env_path(group))
+        cfg = {'name': env['COMPOSE_PROJECT_NAME'], 'services': {}}
+        for service, mappings in services.items():
+            if group == 'middleware':
+                host, fragment = external[service]
+                if not env.get(host, '').startswith('CHANGE_ME') and f'compose/{fragment}.yaml' not in env['COMPOSE_FILE']:
+                    continue
+            cfg['services'][service] = {'ports': [
+                {'published': env[key], 'target': target or 0} for key, target in mappings]}
+        ensure_ports(group, cfg['services'], cfg, owners=owners, reserved=reserved)
+    if sys.platform.startswith('linux'):
+        for port in (80, 443):
+            listeners = capture(['ss', '-H', '-ltnp', f'sport = :{port}'])
+            if any('nginx' not in line for line in listeners.splitlines()):
+                print(f'[WARN] TCP {port} is occupied. Move the existing listener before configuring public HTTPS.')
+    print('Application ports checked.')
 
 
 def select_services(cfg, requested, no_deps=False):
     selected = list(requested or cfg['services'])
     for name in selected:
         if name not in cfg['services']:
-            raise ValueError('当前部署未配置服务：' + name)
+            raise ValueError('Unknown service: ' + name)
         if not no_deps:
             for dep in cfg['services'][name].get('depends_on', {}):
                 if dep not in selected:
@@ -769,18 +1214,18 @@ def select_services(cfg, requested, no_deps=False):
     return selected
 
 
-def up(group, services=(), recreate=False, no_deps=False):
+def up(group, services=(), recreate=False, no_deps=False, *, interactive=True):
     before = {g: env_path(g).read_text() for g in PORTS if env_path(g).exists()}
     cfg = config(group)
     selected = select_services(cfg, services, no_deps)
     for service in selected:
         if 'CHANGE_ME' in json.dumps(cfg['services'][service]):
-            raise ValueError(f'{service} 仍有未配置占位符，请先选择安装菜单完成配置。')
+            raise ValueError(f'Configure placeholders for {service} before deployment.')
     for image in dict.fromkeys(cfg['services'][s]['image'] for s in selected):
-        pull_image(image)
+        pull_image(image, interactive=interactive)
     while True:
         cfg = config(group)
-        ensure_ports(group, selected, cfg)
+        ensure_ports(group, selected, cfg, interactive=interactive)
         args = compose(group) + ['up', '-d', '--pull', 'never', '--wait', '--wait-timeout', '300']
         if recreate:
             args.append('--force-recreate')
@@ -794,24 +1239,27 @@ def up(group, services=(), recreate=False, no_deps=False):
             if group == 'middleware' and env_path(group).read_text() != before[group]:
                 for dependent in ('studio', 'workbench'):
                     if capture(compose(dependent) + ['ps', '-q', dependent]).strip():
-                        up(dependent, [dependent], recreate=True, no_deps=True)
+                        up(dependent, [dependent], recreate=True, no_deps=True, interactive=interactive)
             return
         if not re.search(r'port is already allocated|address already in use|ports are not available|failed to bind', result.stderr + result.stdout, re.I):
-            raise ValueError('服务未就绪，请用菜单 5 查看健康度及 Compose logs 查看日志；不会重复索要密码。')
-        if not ensure_ports(group, selected, config(group)):
-            raise ValueError('启动报告端口冲突但无法定位占用，请检查 Docker 和宿主机监听状态。')
+            raise ValueError('Service is not ready. Use View server health and check the Compose logs.')
+        if not ensure_ports(group, selected, config(group), interactive=interactive):
+            raise ValueError('Docker reported a port conflict. Check host listeners and Docker mappings.')
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='action', required=True)
+    sub.add_parser('preflight')
     sub.add_parser('check-files')
     check = sub.add_parser('check-images'); check.add_argument('group', choices=PORTS)
     pull = sub.add_parser('pull'); pull.add_argument('image'); pull.add_argument('--force', action='store_true')
     start = sub.add_parser('up'); start.add_argument('group', choices=PORTS); start.add_argument('services', nargs='*')
     start.add_argument('--recreate', action='store_true'); start.add_argument('--no-deps', action='store_true')
     args = parser.parse_args()
-    if args.action == 'check-files':
+    if args.action == 'preflight':
+        preflight()
+    elif args.action == 'check-files':
         check_files()
     elif args.action == 'pull':
         pull_image(args.image, args.force)
@@ -826,7 +1274,7 @@ if __name__ == '__main__':
     try:
         main()
     except (ValueError, EOFError, KeyboardInterrupt, OSError, subprocess.SubprocessError) as error:
-        print('[失败] ' + str(error), file=sys.stderr)
+        print('[ERROR] ' + str(error), file=sys.stderr)
         sys.exit(1)
 AOS_EMBEDDED_FILE_END
 cat > "$SUPPORT_DIR/domain-ssl.py" <<'AOS_EMBEDDED_FILE_END'
@@ -842,12 +1290,14 @@ import shutil
 import socket
 import subprocess
 import sys
+import time
 import uuid
 
 SUPPORT = Path(__file__).resolve().parent
 ROOT = Path(os.environ.get("BASIL_DEPLOY_DIR", SUPPORT))
 NGINX_DIR = Path('/etc/nginx/conf.d')
 ACME_DIR = Path('/var/www/basil-acme')
+RENEWAL_HOOK = Path('/etc/letsencrypt/renewal-hooks/deploy/basil-nginx.sh')
 spec = importlib.util.spec_from_file_location('basil_ops', SUPPORT / 'deploy-support.py')
 ops = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(ops)
@@ -910,7 +1360,7 @@ server {{
     ssl_certificate /etc/letsencrypt/live/{domain}/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/{domain}/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
-{proxy}}}
+{challenge}{proxy}}}
 '''
 
 
@@ -918,6 +1368,24 @@ def reload_nginx():
     ops.run(['nginx', '-t'])
     ops.run(['systemctl', 'enable', '--now', 'nginx'])
     ops.run(['systemctl', 'reload', 'nginx'])
+
+
+def wait_for_site(domain, health_path, expected_body=None, *, tls=True):
+    scheme, port = ('https', 443) if tls else ('http', 80)
+    print(f'Waiting up to 30 seconds for Nginx to serve {scheme.upper()} for {domain}.', flush=True)
+    deadline = time.monotonic() + 30
+    remaining = 30
+    while remaining >= 0.01:
+        result = subprocess.run(
+            ['curl', '-q', '--noproxy', '*', '-fsS', '--max-time', f'{min(remaining, 20):.3f}',
+             '--resolve', f'{domain}:{port}:127.0.0.1', f'{scheme}://{domain}{health_path}'],
+            capture_output=True, text=True)
+        if result.returncode == 0 and (expected_body is None or result.stdout == expected_body):
+            return
+        time.sleep(max(0, min(2, deadline - time.monotonic())))
+        remaining = deadline - time.monotonic()
+    detail = (result.stderr.strip() or ('Unexpected site response' if result.returncode == 0 else f'curl exit {result.returncode}')).splitlines()[0]
+    raise ValueError(f'{scheme.upper()} for {domain} did not become ready within 30 seconds. Last error: {detail}')
 
 
 def refresh_port(root, group, key, port):
@@ -931,8 +1399,9 @@ def refresh_port(root, group, key, port):
         conf = NGINX_DIR / ('basil-' + target + '.conf')
         old = conf.read_text()
         if os.geteuid() != 0:
-            raise ValueError('已有域名代理，修改上游端口请使用 sudo bash deploy.sh。')
-        ops.backup(conf)
+            raise ValueError('Run sudo bash deploy.sh to update a managed proxy.')
+        if not valid_domain(item['domain']) or not old.startswith('# Managed by Basil deploy.sh'):
+            raise ValueError(f'Unexpected managed site configuration: {conf}')
         ops.atomic_write(conf, nginx_text(item['domain'], port, True))
         conf.chmod(0o644)
         try:
@@ -943,43 +1412,42 @@ def refresh_port(root, group, key, port):
     ops.atomic_write(state, json.dumps(settings, indent=2) + '\n')
 
 
-def setup(target, domain, email, port, expected):
+def setup(target, domain, port):
     if not valid_domain(domain):
-        raise ValueError('请填写完整公网域名，例如 workbench.example.com，不含协议、路径或端口。')
-    if not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', email):
-        raise ValueError('证书通知邮箱格式无效。')
+        raise ValueError(f'Enter a fully qualified domain without protocol, path or port, e.g. {target}.example.com.')
     if not 1 <= port <= 65535 or port in (80, 443):
-        raise ValueError('应用上游请使用 80/443 以外的端口，80/443 留给宿主机 Nginx。在环境文件修改应用 HOST_PORT 后用菜单 7 重启。')
-    expected = {str(ipaddress.ip_address(x.strip())) for x in expected.split(',')}
-    addresses = {x[4][0] for x in socket.getaddrinfo(domain, 80, type=socket.SOCK_STREAM)}
-    if not addresses or not addresses.issubset(expected):
-        raise ValueError('DNS 尚未正确指向本机：' + ', '.join(sorted(addresses)) + '。检查 A/AAAA；暂时关闭 CDN 代理后重试。')
-    health_path = '/minio/health/ready' if target == 'storage' else '/'
-    ops.run(['curl', '--noproxy', '*', '-fsS', '--max-time', '10', '-o', '/dev/null', f'http://127.0.0.1:{port}{health_path}'])
-    if not shutil.which('nginx') or not shutil.which('certbot'):
-        if not shutil.which('apt-get'):
-            raise ValueError('此系统请先安装 nginx、certbot 和 systemd，再运行菜单。')
-        ops.run(['apt-get', 'update'])
-        ops.run(['apt-get', 'install', '-y', 'nginx', 'certbot'])
+        raise ValueError('Reserve ports 80 and 443 for Nginx. Choose a different application host port.')
+    try:
+        addresses = {x[4][0] for x in socket.getaddrinfo(domain, 80, type=socket.SOCK_STREAM)}
+    except socket.gaierror as error:
+        raise ValueError(f'Cannot resolve {domain}. Check its A/AAAA records.') from error
+    if not addresses:
+        raise ValueError(f'No A/AAAA records for {domain}.')
+    print(f'{domain} resolves to {", ".join(sorted(addresses))}. Configuring HTTPS.', flush=True)
     # Existing non-nginx listeners must be handled before changing any site configuration.
     for number in (80, 443):
         listeners = ops.capture(['ss', '-H', '-ltnp', f'sport = :{number}']).strip()
         if listeners and any('nginx' not in line for line in listeners.splitlines()):
-            raise ValueError(f'端口 {number} 已被其他服务占用，请通过重启菜单调整容器 HOST_PORT 后重试。')
+            raise ValueError(f'Another service occupies port {number}. Move its listener and retry.')
+    if not shutil.which('nginx') or not shutil.which('certbot'):
+        raise ValueError('Configure Nginx and Certbot during the startup environment check.')
+    ops.run(['bash', str(SUPPORT / 'host-state.sh'), 'mark', 'nginx'])
     conf = NGINX_DIR / ('basil-' + target + '.conf')
     conf.parent.mkdir(parents=True, exist_ok=True)
     if conf.exists() and not conf.read_text().startswith('# Managed by Basil deploy.sh'):
-        raise ValueError('目标配置不是脚本管理的文件，拒绝覆盖：' + str(conf))
+        raise ValueError('Refusing to overwrite unmanaged configuration: ' + str(conf))
     nginx_all = subprocess.run(['nginx', '-T'], capture_output=True, text=True)
     current_file = ''
     for line in nginx_all.stdout.splitlines():
         if line.startswith('# configuration file '):
             current_file = line.removeprefix('# configuration file ').rstrip(':')
         if re.search(r'\bserver_name\s', line) and domain in line.replace(';', '').split() and current_file != str(conf):
-            raise ValueError('该域名已在另一份 Nginx 配置中使用：' + current_file)
+            raise ValueError('Domain already configured in another Nginx site: ' + current_file)
     previous = conf.read_text() if conf.exists() else None
-    if conf.exists():
-        ops.backup(conf)
+    if previous is not None:
+        state = ROOT / '.domains.json'
+        if not state.is_file() or target not in json.loads(state.read_text()):
+            raise ValueError(f'This deployment has no ownership record for {conf}.')
     token = uuid.uuid4().hex
     challenge = ACME_DIR / '.well-known/acme-challenge' / token
     challenge.parent.mkdir(parents=True, exist_ok=True)
@@ -987,16 +1455,20 @@ def setup(target, domain, email, port, expected):
     try:
         ops.atomic_write(conf, nginx_text(domain, port, False)); conf.chmod(0o644)
         reload_nginx()
-        for address in addresses:
-            ip = '[' + address + ']' if ':' in address else address
-            body = ops.capture(['curl', '--noproxy', '*', '-fsS', '--max-time', '15', '--resolve', f'{domain}:80:{ip}', f'http://{domain}/.well-known/acme-challenge/{token}'])
-            if body != token:
-                raise ValueError('HTTP 验证路径未返回测试文件，请检查安全组 80 入站和 DNS。')
-        ops.run(['certbot', 'certonly', '--webroot', '-w', '/var/www/basil-acme', '-d', domain,
-                 '--cert-name', domain, '--email', email, '--agree-tos', '--non-interactive', '--keep-until-expiring'])
+        challenge_path = f'/.well-known/acme-challenge/{token}'
+        wait_for_site(domain, challenge_path, token, tls=False)
+        try:
+            ops.run(['bash', str(SUPPORT / 'host-state.sh'), 'cert', domain])
+            ops.run(['certbot', 'certonly', '--webroot', '-w', str(ACME_DIR), '-d', domain,
+                     '--cert-name', domain, '--register-unsafely-without-email', '--agree-tos',
+                     '--non-interactive', '--keep-until-expiring'])
+            ops.run(['bash', str(SUPPORT / 'host-state.sh'), 'cert-done'])
+        except subprocess.CalledProcessError as error:
+            raise ValueError(f'Certificate request failed for {domain}. See the Certbot error above. For HTTP-01 failures, '
+                             'check that public DNS and TCP port 80 route the challenge path to this Nginx instance.') from error
         ops.atomic_write(conf, nginx_text(domain, port, True)); conf.chmod(0o644)
         reload_nginx()
-        ops.run(['curl', '--noproxy', '*', '-fsS', '--max-time', '20', '-o', '/dev/null', f'https://{domain}{health_path}'])
+        wait_for_site(domain, challenge_path, token)
     except BaseException:
         if previous is None:
             conf.unlink(missing_ok=True)
@@ -1006,9 +1478,10 @@ def setup(target, domain, email, port, expected):
         raise
     finally:
         challenge.unlink(missing_ok=True)
-    hook = Path('/etc/letsencrypt/renewal-hooks/deploy/basil-nginx.sh')
+    hook = RENEWAL_HOOK
     hook.parent.mkdir(parents=True, exist_ok=True)
     hook.write_text('#!/bin/sh\nset -eu\nnginx -t\nsystemctl reload nginx\n'); hook.chmod(0o755)
+    ops.run(['bash', str(SUPPORT / 'host-state.sh'), 'file', str(hook)])
     ops.run(['systemctl', 'enable', '--now', 'certbot.timer'])
     state = ROOT / '.domains.json'
     settings = json.loads(state.read_text()) if state.exists() else {}
@@ -1019,115 +1492,118 @@ def setup(target, domain, email, port, expected):
 def apply_urls(target, domain):
     url = 'https://' + domain
     if target == 'workbench':
-        ops.edit_env(ops.env_path('workbench'), {k: url for k in ('APP_URL', 'FRONTEND_URL', 'FRONTEND_OAUTH_RESULT_URL')})
-        ops.up('workbench', ['workbench'], recreate=True, no_deps=True)
+        ops.edit_env(ops.env_path('workbench'), dict(APP_URL=url, FRONTEND_URL=url,
+                    FRONTEND_OAUTH_RESULT_URL=url, BASILCRAW_API_HOST=domain))
+        groups = ['workbench']
     elif target == 'studio':
         ops.edit_env(ops.env_path('studio'), {'ASSETS_SEARCH_SNAPSHOT_URL': url + '/basilos/asset/search-embed',
                     'VIEW_SNAPSHOT_URL': url + '/basilos/studio/engine/multi-dim-table-embed'})
-        ops.up('studio', ['studio'], recreate=True, no_deps=True)
+        groups = ['studio']
     else:
         ops.edit_env(ops.env_path('middleware'), {'MINIO_EXPOSE_URL': url})
         ops.edit_env(ops.env_path('workbench'), {'MINIO_PUBLIC_BASE_URL': url, 'MINIO_PRESIGN_ENDPOINT': domain,
                     'MINIO_PRESIGN_PORT': '443', 'MINIO_PRESIGN_USE_SSL': 'true'})
-        for group, service in [('studio', 'studio'), ('workbench', 'workbench')]:
-            if ops.capture(ops.compose(group) + ['ps', '-a', '-q', service]).strip():
-                ops.up(group, [service], recreate=True, no_deps=True)
+        groups = ['studio', 'workbench']
+    def running(group, service):
+        if not (ROOT / f'docker-compose.{group}.yaml').is_file():
+            return False
+        project = ops.read_env(ops.env_path(group))['COMPOSE_PROJECT_NAME']
+        return bool(ops.capture(['docker', 'ps', '-q', '--filter', f'label=com.docker.compose.project={project}',
+                                 '--filter', f'label=com.docker.compose.service={service}',
+                                 '--filter', f'label=com.docker.compose.project.working_dir={ROOT}']).strip())
+
+    for group in groups:
+        if running(group, group):
+            ops.up(group, [group], recreate=True, no_deps=True, interactive=False)
     for group, frontend in [('studio', 'studio-frontend'), ('workbench', 'workbench-frontend')]:
-        if ops.capture(ops.compose(group) + ['ps', '-q', frontend]).strip():
+        if running(group, frontend):
             ops.run(ops.compose(group) + ['exec', '-T', frontend, 'nginx', '-s', 'reload'])
-
-
-def release_web_ports():
-    owners = ops.port_owners()
-    for group in ops.PORTS:
-        cfg = ops.config(group)
-        for service, mappings in ops.PORTS[group].items():
-            for key, _ in mappings:
-                value = ops.read_env(ops.env_path(group)).get(key)
-                if value not in ('80', '443') or (cfg['name'], service) not in owners.get(int(value), set()):
-                    continue
-                print(f'{service} 正占用 {value}，需要移到其他端口，供 Nginx 使用 80/443。')
-                while True:
-                    proposed = ops.ask('请输入新的应用端口（0 取消）', '12000' if service == 'studio-frontend' else '')
-                    if proposed == '0':
-                        raise ValueError('已取消域名配置。')
-                    if proposed.isdecimal() and 1 <= int(proposed) <= 65535 and int(proposed) not in (80, 443) and not owners.get(int(proposed)) and ops.port_available(int(proposed)):
-                        break
-                    print('端口不可用，请重新输入。')
-                ops.edit_env(ops.env_path(group), {key: proposed})
-                ops.sync_port_urls(group, key, int(value), int(proposed))
-                ops.up(group, [service], recreate=True, no_deps=True)
 
 
 def main():
     if os.geteuid() != 0:
-        raise ValueError('域名配置需要宿主机管理权限，请使用 sudo bash deploy.sh 后选择菜单 8。')
-    print('配置域名与 HTTPS：1) Studio  2) Workbench  3) MinIO 文件服务  0) 返回')
-    target = {'1': 'studio', '2': 'workbench', '3': 'storage'}.get(ops.ask('选择', '0'))
-    if not target:
-        return
-    release_web_ports()
-    group, key = TARGETS[target]
-    port = int(ops.read_env(ops.env_path(group))[key])
-    domain = ops.ask('完整公网域名（例如 workbench.example.com）').lower()
-    expected = ops.ask('服务器公网 IP（有 IPv6 时逗号分隔全部 A/AAAA 地址）')
-    email = ops.ask('证书通知邮箱')
-    print(f'请在域名的 DNS 服务商添加 A/AAAA：{domain} → {expected}。\n暂时关闭 CDN 代理；安全组放行 TCP 80/443。此脚本负责检查 DNS，不会修改 DNS 账户。')
-    ops.ask('完成后输入任意字符开始检查，Ctrl-C 返回')
-    setup(target, domain, email, port, expected)
-    apply_urls(target, domain)
-    print('域名、证书和应用环境变量已更新：https://' + domain)
+        raise ValueError('Domain setup requires root. Run sudo bash deploy.sh.')
+    services = {'1': 'workbench', '2': 'studio', '3': 'storage'}
+    while True:
+        print('Set up domain and HTTPS\n  1) Workbench\n  2) Studio\n  3) Storage\n  0) Back')
+        choice = ops.ask('Select', '0')
+        if choice == '0':
+            return
+        if choice not in services:
+            print('Select a number from 0 to 3.')
+            continue
+        target = services[choice]
+        group, key = TARGETS[target]
+        try:
+            port = int(ops.read_env(ops.env_path(group))[key])
+            domain = ops.ask(f'{target.capitalize()} domain name (e.g. {target}.example.com)').lower().rstrip('.')
+            setup(target, domain, port)
+            apply_urls(target, domain)
+            print('Domain, certificate and application settings saved: https://' + domain)
+        except (ValueError, OSError, subprocess.SubprocessError) as error:
+            print('[ERROR] ' + str(error), file=sys.stderr)
 
 
 if __name__ == '__main__':
     try:
         main()
     except (ValueError, OSError, EOFError, KeyboardInterrupt, subprocess.SubprocessError) as error:
-        print('[失败] ' + str(error), file=sys.stderr)
+        print('[ERROR] ' + str(error), file=sys.stderr)
         sys.exit(1)
 AOS_EMBEDDED_FILE_END
 cat > "$SUPPORT_DIR/install-docker.sh" <<'AOS_EMBEDDED_FILE_END'
 #!/usr/bin/env bash
 set -Eeuo pipefail
-[[ $(id -u) -eq 0 ]] || { echo '请使用 sudo bash deploy.sh，再选择环境检查。' >&2; exit 1; }
-[[ -f /etc/os-release ]] || { echo '请手动安装 Docker Engine 与 Compose 插件。'; exit 1; }
+[[ $(id -u) -eq 0 ]] || { echo 'Run sudo bash deploy.sh to configure the server.' >&2; exit 1; }
+[[ -f /etc/os-release ]] || { echo 'Install Docker Engine and its Compose plugin.'; exit 1; }
 . /etc/os-release
-[[ "$ID" == ubuntu || "$ID" == debian ]] || { echo '自动安装支持 Ubuntu/Debian；其他系统请先安装 Docker 与 Compose 插件。'; exit 1; }
+[[ "$ID" == ubuntu || "$ID" == debian ]] || { echo 'Automatic setup supports Ubuntu and Debian. Install Docker and Compose manually on other systems.'; exit 1; }
+journal="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/host-state.sh"
+record() { bash "$journal" "$@"; }
+record setup
+if [[ "${1:-}" == start ]]; then record mark docker; systemctl start docker; exit; fi
 apt-get update
-apt-get install -y ca-certificates curl python3 iproute2 gnupg
-if command -v docker >/dev/null && docker compose version >/dev/null 2>&1; then
-  exit
+basic=()
+for entry in curl:curl python3:python3 ss:iproute2 nginx:nginx certbot:certbot; do
+  command -v "${entry%:*}" >/dev/null || basic+=("${entry#*:}")
+done
+if (( ${#basic[@]} )); then
+  if ! command -v nginx >/dev/null || ! command -v certbot >/dev/null; then record mark nginx; fi
+  record packages "${basic[@]}"
 fi
-if command -v docker >/dev/null && ! docker compose version >/dev/null 2>&1; then
-  if apt-cache show docker-compose-plugin >/dev/null 2>&1; then
-    apt-get install -y docker-compose-plugin
-    exit
-  fi
-  # Preserve existing distribution packages instead of replacing a live engine.
+help="$(docker compose up --help 2>/dev/null)" || help=""
+[[ "$help" != *--wait* ]] || exit 0
+if command -v docker >/dev/null; then
+  if apt-cache show docker-compose-plugin >/dev/null 2>&1; then record packages docker-compose-plugin; exit; fi
   if dpkg-query -W -f='${Status}' docker.io 2>/dev/null | grep -q 'install ok installed'; then
-    apt-get install -y docker-compose-v2
-    exit
+    record packages docker-compose-v2; exit
   fi
+else
+  record mark docker
 fi
+record packages ca-certificates gnupg
 install -m 0755 -d /etc/apt/keyrings
 key_file="$(mktemp)"
 trap 'rm -f "$key_file"' EXIT
 repo="https://download.docker.com/linux/$ID"
 if ! curl -fSL --retry 2 --connect-timeout 10 --max-time 40 "$repo/gpg" -o "$key_file"; then
   repo="https://mirrors.aliyun.com/docker-ce/linux/$ID"
-  echo 'Docker 官方下载连接失败，尝试阿里云 Docker CE 软件包镜像。'
+  echo 'Docker download failed. Trying the Alibaba Cloud Docker CE mirror.'
   curl -fSL --retry 2 --connect-timeout 10 --max-time 40 "$repo/gpg" -o "$key_file"
 fi
 # Pin Docker's signing key, including when obtained from the mirror.
-gpg --show-keys --with-colons "$key_file" | grep -q '9DC858229FC7DD38854AE2D88D81803C0EBFCD88' || { echo 'Docker 签名密钥指纹不匹配。'; exit 1; }
+gpg --show-keys --with-colons "$key_file" | grep -q '9DC858229FC7DD38854AE2D88D81803C0EBFCD88' || { echo 'Docker signing key fingerprint mismatch.'; exit 1; }
 install -m 0644 "$key_file" /etc/apt/keyrings/basil-docker.asc
+record file /etc/apt/keyrings/basil-docker.asc
 printf 'deb [arch=%s signed-by=/etc/apt/keyrings/basil-docker.asc] %s %s stable\n' "$(dpkg --print-architecture)" "$repo" "${UBUNTU_CODENAME:-$VERSION_CODENAME}" > /etc/apt/sources.list.d/basil-docker.list
+record file /etc/apt/sources.list.d/basil-docker.list
 apt-get update
 if command -v docker >/dev/null; then
-  apt-get install -y docker-compose-plugin
+  record packages docker-compose-plugin
 else
-  apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  record packages docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 fi
+record mark docker
 systemctl enable --now docker
 docker compose version
 docker info >/dev/null
@@ -1198,13 +1674,13 @@ write_env() {
     }
   ' "${ENV_FILE}" >"${temp_file}"; then
     rm -f "${temp_file}"
-    fail "无法更新 ${ENV_FILE} 中的 ${key}"
+    fail "Could not update ${key} in ${ENV_FILE}"
   fi
 
   chmod 600 "${temp_file}"
   mv "${temp_file}" "${ENV_FILE}"
   UPDATED_COUNT=$((UPDATED_COUNT + 1))
-  info "已修正 ${key}: ${current_value:-<未配置>} -> ${value}"
+  info "Corrected ${key}: ${current_value:-<unset>} -> ${value}"
 }
 
 append_candidate() {
@@ -1256,8 +1732,8 @@ resolve_docker_socket() {
 read_socket_gid() {
   local socket_path="$1"
   local gid
-  # Docker Desktop 将挂载到 Linux 容器内的 Engine Socket 表现为 root:root；
-  # macOS 宿主机 Socket 文件自身的组 ID 不能直接用于容器 group_add。
+  # Docker Desktop presents the Engine socket as root:root inside Linux containers.
+  # The macOS socket group does not determine the Linux container group.
   if [[ "$(uname -s)" == 'Darwin' ]]; then
     printf '0'
     return
@@ -1277,19 +1753,19 @@ main() {
   local docker_socket docker_gid
   SOCKET_CANDIDATES=()
 
-  [[ -e "${ENV_FILE}" ]] || fail "未找到 ${ENV_FILE}；请先从 .env.workbench.example 创建该文件"
-  [[ -f "${ENV_FILE}" ]] || fail "${ENV_FILE} 不是普通文件"
-  [[ ! -L "${ENV_FILE}" ]] || fail "拒绝修改符号链接环境文件：${ENV_FILE}"
-  command -v docker >/dev/null 2>&1 || fail '缺少 docker 命令'
-  command -v stat >/dev/null 2>&1 || fail '缺少 stat 命令'
+  [[ -e "${ENV_FILE}" ]] || fail "Create ${ENV_FILE} from .env.workbench.example first"
+  [[ -f "${ENV_FILE}" ]] || fail "Expected a regular file: ${ENV_FILE}"
+  [[ ! -L "${ENV_FILE}" ]] || fail "Refusing to edit symlink: ${ENV_FILE}"
+  command -v docker >/dev/null 2>&1 || fail 'Missing docker command'
+  command -v stat >/dev/null 2>&1 || fail 'Missing stat command'
 
   docker_socket="$(resolve_docker_socket)" || \
-    fail '未找到当前用户可访问且 Docker Engine 能响应的 Unix Socket'
+    fail 'No accessible local Docker Engine socket'
   docker_gid="$(read_socket_gid "${docker_socket}")" || \
-    fail "无法读取 Docker Socket GID：${docker_socket}"
-  [[ "${docker_gid}" =~ ^[0-9]+$ ]] || fail "Docker Socket GID 非法：${docker_gid}"
+    fail "Cannot read the Docker socket GID: ${docker_socket}"
+  [[ "${docker_gid}" =~ ^[0-9]+$ ]] || fail "Invalid Docker socket GID: ${docker_gid}"
 
-  # 当前发布镜像合同：Workbench 以 root 管理目录，Sandbox 以 1000:10001 运行。
+  # Workbench manages storage as root; the sandbox runs as 1000:10001.
   write_env USER_STORAGE_OWNER_UID 0
   write_env USER_STORAGE_GID 10001
   write_env SANDBOX_WORKSPACE_OWNER_UID 0
@@ -1299,11 +1775,11 @@ main() {
   write_env RUNTIME_DOCKER_GID "${docker_gid}"
 
   if ((UPDATED_COUNT > 0)); then
-    pass "已更新 ${ENV_FILE}，共修正 ${UPDATED_COUNT} 项"
+    pass "Updated ${ENV_FILE}: ${UPDATED_COUNT} corrections"
   else
-    pass "${ENV_FILE} 中的 UID/GID 与 Docker Socket 配置均正确"
+    pass "UID/GID and Docker socket settings are valid in ${ENV_FILE}"
   fi
-  info '脚本未检查或修改镜像、密钥、域名、容器状态、HTTP 服务和业务功能'
+  info 'Host filesystem and socket checks complete'
 }
 
 main "$@"
@@ -1316,7 +1792,7 @@ COMPOSE_FILE=compose/middleware.yaml
 BASIL_NETWORK_NAME=basilos
 TZ=Asia/Shanghai
 
-# 中间件镜像
+# Middleware images
 POSTGRES_IMAGE=registry.cn-hangzhou.aliyuncs.com/tyrion-image/pgvector
 POSTGRES_VERSION=pg16
 REDIS_IMAGE=registry.cn-hangzhou.aliyuncs.com/tyrion-image/redis
@@ -1326,7 +1802,7 @@ RABBITMQ_VERSION=3-management
 MINIO_IMAGE=registry.cn-hangzhou.aliyuncs.com/tyrion-image/minio
 MINIO_VERSION=2024.8.3
 
-# 宿主机映射端口
+# Published host ports
 POSTGRES_HOST_PORT=5432
 REDIS_HOST_PORT=6379
 RABBITMQ_HOST_PORT=5672
@@ -1355,7 +1831,7 @@ RABBITMQ_USERNAME=basilos
 RABBITMQ_PASSWORD=CHANGE_ME_RABBITMQ_PASSWORD
 RABBITMQ_VIRTUAL_HOST=/basilos
 
-# 对象存储：MinIO
+# MinIO object storage
 FILE_SERVICE_SELECTOR=minio
 MINIO_EXPOSE_URL=https://CHANGE_ME_STORAGE_DOMAIN
 MINIO_HOST=CHANGE_ME_MINIO_HOST
@@ -1365,12 +1841,12 @@ MINIO_PASSWORD=CHANGE_ME_MINIO_PASSWORD
 MINIO_DATA_HOST_PATH=./data/minio
 MINIO_DATA_CONTAINER_PATH=/bitnami/minio/data
 
-# 对象存储：阿里云 OSS
+# Alibaba Cloud OSS
 ALI_OSS_ACCESS_ID=
 ALI_OSS_ACCESS_KEY=
 ALI_OSS_ENDPOINT=
 
-# 对象存储：Azure Blob
+# Azure Blob storage
 AZURE_BLOB_ACCOUNT_NAME=
 AZURE_BLOB_ACCOUNT_KEY=
 AZURE_BLOB_ENDPOINT=
@@ -1381,51 +1857,51 @@ COMPOSE_PROJECT_NAME=basil-studio
 COMPOSE_PATH_SEPARATOR=,
 COMPOSE_FILE=docker-compose.studio.yaml
 
-# Studio 镜像：2026-11-16 本地验证组合；正式服务器仍须按部署流程验收。
+# Studio images tested together on 2026-11-16. Validate on the target server.
 STUDIO_IMAGE=ghcr.io/basilos-ai/studio-backend
 STUDIO_VERSION=v1.8.10
 STUDIO_FRONTEND_IMAGE=ghcr.io/basilos-ai/studio-frontend
-STUDIO_FRONTEND_VERSION=v1.8.11
+STUDIO_FRONTEND_VERSION=v1.8.12
 NODE_SANDBOX_IMAGE=ghcr.io/basilos-ai/studio-node-sandbox
 NODE_SANDBOX_VERSION=v1.0.0
 
-# Studio 宿主机映射端口
+# Studio published host ports
 STUDIO_API_HOST_PORT=12001
 STUDIO_FRONTEND_HOST_PORT=12000
 NODE_SANDBOX_HOST_PORT=12002
 
-# Studio 运行配置
+# Studio runtime
 JAVA_OPTS=-Xms1g -Xmx2g
 SPRING_PROFILES_ACTIVE=docker
 ENCRYPTOR_PASSWORD=CHANGE_ME_ENCRYPTOR_PASSWORD
-# 私有化部署固定为 false，deploy.sh 在部署 Studio 时会强制校正。
+# Private deployment requires false; deploy.sh enforces this setting.
 ENABLE_HTTPS_COOKIES=false
 FLOW_NODE_CALL_DEPTH=100
 SANDBOX_READ_TIMEOUT_SECOND=600
 
-# Studio 接口返回的前端页面地址
+# Studio frontend URLs returned by the API
 ASSETS_SEARCH_SNAPSHOT_URL=https://CHANGE_ME_STUDIO_FRONTEND_DOMAIN/basilos/asset/search-embed
 VIEW_SNAPSHOT_URL=https://CHANGE_ME_STUDIO_FRONTEND_DOMAIN/basilos/studio/engine/multi-dim-table-embed
 
-# Studio 数据库
+# Studio database
 POSTGRESQL_DATABASE=basilos
 
-# Studio Redis 逻辑库
+# Studio Redis database
 REDIS_DATABASE=0
 
-# Studio 对象存储空间
+# Studio object storage
 FILE_SERVICE_PRIVATE_BUCKET_NAME=studio-private
 FILE_SERVICE_PUBLIC_BUCKET_NAME=studio-public
 ALI_OSS_BUCKET_NAME=
 AZURE_BLOB_CONTAINER=
 
-# 向量数据库：默认使用 PostgreSQL
+# Vector database (PostgreSQL by default)
 VECTOR_DATABASE_SELECTOR=postgresql
 WEAVIATE_HOST=http://weaviate
 WEAVIATE_PORT=8080
 WEAVIATE_API_KEY=
 
-# 可选：OAuth2
+# Optional OAuth2
 PUB_KEY=
 OAUTH2_DISCOVERY_URL=
 OAUTH2_CLIENT_ID=
@@ -1436,14 +1912,14 @@ OAUTH2_HOME_URI=
 OAUTH2_AUTHORIZED_URI=
 OAUTH2_TOKEN_URI=
 
-# 可选：SAML
+# Optional SAML
 SAML_SP_ENTITY_ID=
 SAML_IDP_SSO_URL=
 SAML_ACS_URI=
 SAML_HOME_URI=
 SAML_PUBLIC_KEY=
 
-# 可选：内容与数据集成
+# Optional content and data integrations
 TEXT_IN_APP_ID=
 TEXT_IN_SECRET_CODE=
 MINERU_HOST=
@@ -1451,7 +1927,7 @@ DATA_QUERY_BASE_URL=
 HANDLE_CONTENT_PARSE_CONCURRENCY=2
 HANDLE_PRO_KNOWLEDGE_BASE_PARSE_QUEUE_CONCURRENCY=2
 
-# 可选：企业微信
+# Optional WeCom integration
 WX_CP_CORP_ID=
 WX_CP_AGENT_ID=
 WX_CP_SECRET=
@@ -1465,13 +1941,13 @@ COMPOSE_PATH_SEPARATOR=
 COMPOSE_FILE=docker-compose.workbench.yaml
 WORKBENCH_DEPLOYMENT_ROOT=/data/basil
 
-# GitHub GHCR 镜像；各组件默认使用 latest 标签，安装/重启优先使用缓存，菜单 4 显式更新
+# Deploy/restart reuse cached images; Update pulls explicitly.
 WORKBENCH_IMAGE=ghcr.io/basilos-ai/workbench-backend
-WORKBENCH_VERSION=latest
+WORKBENCH_VERSION=v1.8.48
 WORKBENCH_FRONTEND_IMAGE=ghcr.io/basilos-ai/workbench-frontend
-WORKBENCH_FRONTEND_VERSION=latest
+WORKBENCH_FRONTEND_VERSION=v1.8.43
 RUNTIME_IMAGE=ghcr.io/basilos-ai/workbench-runtime
-RUNTIME_VERSION=latest
+RUNTIME_VERSION=v1.8.25
 RUNTIME_SANDBOX_IMAGE=ghcr.io/basilos-ai/workbench-runtime-sandbox
 RUNTIME_SANDBOX_VERSION=latest
 RUNTIME_NGINX_IMAGE=nginx
@@ -1480,7 +1956,7 @@ WORKBENCH_FRONTEND_PLATFORM=linux/amd64
 
 SERVER_HOST=http://workbench:3000
 
-# 对外访问和宿主机端口
+# Public endpoints and published host ports
 APP_URL=CHANGE_ME_WORKBENCH_API_URL
 FRONTEND_URL=CHANGE_ME_WORKBENCH_FRONTEND_URL
 FRONTEND_OAUTH_RESULT_URL=CHANGE_ME_WORKBENCH_FRONTEND_URL
@@ -1488,35 +1964,35 @@ WORKBENCH_HOST_PORT=11001
 WORKBENCH_FRONTEND_HOST_PORT=11007
 RUNTIME_GATEWAY_HOST_PORT=11002
 
-# Workbench 前端访问 Studio 平台网关
-BASILOS_GATEWAY_HOST=CHANGE_ME_GATEWAY_URL
-# 可选：任务产出保存到 Library 时使用；不使用该能力则留空
+# Workbench frontend gateway to Studio
+BASILOS_GATEWAY_HOST=http://studio-frontend/
+# Optional Library endpoint for task outputs
 ASSETS_BASE_URL=
 DESKTOP_DOWNLOAD_BASE_URL=https://tyrion-team.oss-cn-shanghai.aliyuncs.com/Workbench
 
-# Workbench 与 Runtime 数据库
+# Workbench and Runtime databases
 POSTGRESQL_DATABASE=basilos
 RUNTIME_DB_DATABASE=basilos
 DB_SCHEMA=workbench
 RUNTIME_DB_SCHEMA=runtime
 JWT_SECRET=CHANGE_ME_RANDOM_JWT_SECRET
 ENCRYPTION_KEY=CHANGE_ME_RANDOM_ENCRYPTION_KEY
-# 仅用于后台新建/重置用户；内置 admin 的初始密码由镜像迁移脚本决定，首次登录必须修改。
+# Used for new or reset users. Migrations set the initial built-in admin password.
 DEFAULT_USER_PASSWORD=CHANGE_ME_DEFAULT_USER_PASSWORD
 
-# Workbench/Runtime 当前客户端的 URL 输入写法；解析后连接共享的 /basilos VHost。
+# Runtime and Workbench resolve this URL to the shared /basilos vhost.
 RABBITMQ_VIRTUAL_HOST=//basilos
 REDIS_DATABASE=1
 RUNTIME_HTTP_SERVICE_TOKEN=CHANGE_ME_RUNTIME_HTTP_SERVICE_TOKEN
 RUNTIME_TO_WORKBENCH_SERVICE_TOKEN=CHANGE_ME_RUNTIME_TO_WORKBENCH_SERVICE_TOKEN
 WORKBENCH_INTERNAL_BASE_URL=http://workbench:3000
 
-# 对话输出与 URL 附件
+# Conversation output and URL attachments
 RUNTIME_MODEL_MAX_TOKENS=65536
 INTEGRATION_ATTACHMENT_URL_MODE=public-https
 
-# Storage 初始化与 Runtime Sandbox；部署脚本自动校正以下 UID/GID 与 Docker Socket 配置。
-# workbench-storage-init 使用以下 UID/GID 创建共享目录，只处理顶层权限，不递归改写已有数据。
+# Storage and sandbox. deploy.sh verifies the UID/GID and Docker socket.
+# The init container sets top-level directory ownership without recursive changes.
 AGENT_RUNTIME_ENABLED=true
 RUNTIME_SANDBOX_ENABLED=true
 RUNTIME_SANDBOX_HOST_ID=CHANGE_ME_SANDBOX_HOST_ID
@@ -1532,12 +2008,12 @@ RUNTIME_SANDBOX_CPU_LIMIT=2
 RUNTIME_SANDBOX_MEMORY_LIMIT_MB=2048
 RUNTIME_SANDBOX_PIDS_LIMIT=256
 
-# Workbench 对象存储空间
+# Workbench object storage
 MINIO_BUCKET=bascilclaw
 MINIO_REGION=us-east-1
 STORAGE_PRESIGNED_URL_EXPIRES_SECONDS=3600
 
-# 可选：注册邮件、故障告警和 APM；未启用时保持关闭或留空
+# Optional registration email, alerts and APM
 MAIL_TRANSPORT=disabled
 INCIDENT_ALERT_ENABLED=false
 INCIDENT_ALERT_WEBHOOK_URL=
@@ -1571,20 +2047,20 @@ info() {
 }
 
 success() {
-  printf '[通过] %s\n' "$*"
+  printf '[OK] %s\n' "$*"
 }
 
 warn() {
-  printf '[注意] %s\n' "$*" >&2
+  printf '[WARN] %s\n' "$*" >&2
 }
 
 die() {
-  printf '[失败] %s\n' "$*" >&2
+  printf '[ERROR] %s\n' "$*" >&2
   exit 1
 }
 
 require_command() {
-  command -v "$1" >/dev/null 2>&1 || die "缺少命令：$1"
+  command -v "$1" >/dev/null 2>&1 || die "Missing command: $1"
 }
 
 prompt_required() {
@@ -1601,7 +2077,7 @@ prompt_required() {
       read -r -p "$label: " input_value
     fi
     if [[ "$input_value" == *"'"* ]]; then
-      warn "输入不能包含英文单引号。"
+      warn "Single quotes are not supported."
       input_value=""
     fi
   done
@@ -1621,7 +2097,7 @@ prompt_port() {
       printf -v "$variable_name" '%s' "$value"
       return
     fi
-    warn "端口必须是 1 到 65535 之间的整数。"
+    warn "Enter a port from 1 to 65535."
     value=""
   done
 }
@@ -1642,7 +2118,7 @@ prompt_image_version() {
       printf -v "$variable_name" '%s' "$value"
       return
     fi
-    warn "镜像版本不是有效的 Docker tag。"
+    warn "Invalid Docker image tag."
     value=""
   done
 }
@@ -1659,7 +2135,7 @@ prompt_url() {
       printf -v "$variable_name" '%s' "${value%/}"
       return
     fi
-    warn "地址必须以 http:// 或 https:// 开头。"
+    warn "Enter a URL starting with http:// or https://."
     value=""
   done
 }
@@ -1669,13 +2145,13 @@ ensure_deployment_access_host() {
 
   [[ -n "$DEPLOYMENT_ACCESS_HOST" ]] && return
   while true; do
-    prompt_required value "部署服务器对外访问 IP 或域名（IPv6 使用 []，不含协议和端口）"
+    prompt_required value "Server hostname or IP (bracket IPv6; omit protocol and port)"
     if [[ "$value" != *://* && "$value" != */* && "$value" != *[[:space:]]* &&
       ( "$value" != *:* || "$value" == \[*\] ) ]]; then
       DEPLOYMENT_ACCESS_HOST="$value"
       return
     fi
-    warn "请只输入 IP 或域名（IPv6 使用 []），不要包含协议、端口或路径。"
+    warn "Enter a hostname or IP without a protocol, port or path. Enclose IPv6 in brackets."
     value=""
   done
 }
@@ -1696,14 +2172,14 @@ prompt_secret_confirm() {
   while true; do
     read -r -s -p "$label: " first
     printf '\n'
-    read -r -s -p "再次确认$label: " second
+    read -r -s -p "Confirm $label: " second
     printf '\n'
     if [[ -z "$first" ]]; then
-      warn "密码或密钥不能为空。"
+      warn "Enter a nonempty password or key."
     elif [[ "$first" == *"'"* ]]; then
-      warn "密码或密钥不能包含英文单引号。"
+      warn "Passwords and keys cannot contain a single quote."
     elif [[ "$first" != "$second" ]]; then
-      warn "两次输入不一致，请重新输入。"
+      warn "The entries do not match. Try again."
     else
       printf -v "$variable_name" '%s' "$first"
       return
@@ -1715,16 +2191,14 @@ confirm() {
   local label="$1"
   local default_answer="${2:-y}"
   local answer=""
-  local hint='[Y/n]'
 
-  [[ "$default_answer" == n ]] && hint='[y/N]'
   while true; do
-    read -r -p "$label $hint: " answer
+    read -r -p "$label [y/n] (default: $default_answer): " answer || return 1
     answer="${answer:-$default_answer}"
     case "$(printf '%s' "$answer" | tr '[:upper:]' '[:lower:]')" in
       y | yes) return 0 ;;
       n | no) return 1 ;;
-      *) warn "请输入 y 或 n。" ;;
+      *) warn "Enter y or n." ;;
     esac
   done
 }
@@ -1734,14 +2208,14 @@ choose_mode() {
   local choice=""
 
   while true; do
-    printf '\n%s 部署方式：\n' "$service_name"
-    printf '  1) 本地：由 Docker Compose 部署\n'
-    printf '  2) 线上：连接外部服务\n'
-    read -r -p '请选择 [1-2]: ' choice
+    printf '\n%s deployment mode\n' "$service_name"
+    printf '  1) Local Docker Compose service\n'
+    printf '  2) External service\n'
+    read -r -p 'Select [1-2]: ' choice
     case "$choice" in
       1) SELECTED_MODE=local; return ;;
       2) SELECTED_MODE=external; return ;;
-      *) warn "请输入 1 或 2。" ;;
+      *) warn "Enter 1 or 2." ;;
     esac
   done
 }
@@ -1750,16 +2224,16 @@ choose_storage_provider() {
   local choice=""
 
   while true; do
-    printf '\n外部存储类型：\n'
+    printf '\nExternal storage provider\n'
     printf '  1) MinIO\n'
-    printf '  2) 阿里云 OSS\n'
+    printf '  2) Alibaba Cloud OSS\n'
     printf '  3) Azure Blob\n'
-    read -r -p '请选择 [1-3]: ' choice
+    read -r -p 'Select [1-3]: ' choice
     case "$choice" in
       1) SELECTED_PROVIDER=minio; return ;;
       2) SELECTED_PROVIDER=aliyun-oss; return ;;
       3) SELECTED_PROVIDER=azure-blob; return ;;
-      *) warn "请输入 1、2 或 3。" ;;
+      *) warn "Enter 1, 2 or 3." ;;
     esac
   done
 }
@@ -1770,7 +2244,7 @@ dotenv_encode() {
     printf '%s' "$value"
     return
   fi
-  [[ "$value" != *"'"* ]] || die "环境变量值不能包含英文单引号，请更换输入。"
+  [[ "$value" != *"'"* ]] || die "Environment values cannot contain a single quote."
   printf "'%s'" "$value"
 }
 
@@ -1901,8 +2375,8 @@ prepare_owned_directory() {
   if [[ "$(id -u)" -eq 0 ]]; then
     chown -R 1001:1001 "$path"
   elif [[ "$(uname -s)" == Darwin ]]; then
-    # Docker Desktop 的目录权限在 Linux 容器中设置，避免要求 macOS sudo 密码。
-    # 使用前一步已验证的本地 PostgreSQL 镜像，不因全局 amd64 模拟设置另拉一个平台。
+    # Set Linux ownership inside Docker Desktop.
+    # Reuse the verified local PostgreSQL image and its platform.
     ownership_image="$(docker image inspect --format '{{.Id}}' \
       "$(dotenv_get POSTGRES_IMAGE):$(dotenv_get POSTGRES_VERSION)")"
     ownership_platform="$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$ownership_image")"
@@ -1912,12 +2386,12 @@ prepare_owned_directory() {
   elif command -v sudo >/dev/null 2>&1; then
     sudo chown -R 1001:1001 "$path"
   else
-    die "$path 需要归属 1001:1001；请使用 root 权限处理后重试。"
+    die "$path must be owned by 1001:1001. Correct its ownership as root and retry."
   fi
 }
 
 retry_configuration() {
-  confirm "测试失败，是否重新配置当前服务？" y || die "部署已停止。"
+  confirm "Check failed. Reconfigure this service?" y || die "Deployment stopped."
 }
 
 test_postgresql_local() {
@@ -1997,6 +2471,66 @@ test_url_reachable() {
   [[ "$status" != 000 ]]
 }
 
+check_minio_public_url() {
+  local saved_url candidate kind status
+  saved_url="$(dotenv_get MINIO_EXPOSE_URL)"
+  candidate="$saved_url"
+  while true; do
+    kind="$(python3 - "$candidate" <<'PYTHON'
+import ipaddress
+import sys
+from urllib.parse import urlsplit
+
+try:
+    url = urlsplit(sys.argv[1])
+    if (url.scheme not in ('http', 'https') or not url.hostname or url.username is not None
+            or url.query or url.fragment or any(c.isspace() or c == "'" for c in sys.argv[1])
+            or url.port == 0):
+        raise ValueError()
+    host = url.hostname.rstrip('.').lower()
+    try:
+        ip = ipaddress.ip_address(host)
+        ip = getattr(ip, 'ipv4_mapped', None) or ip
+        local = ip.is_loopback or ip.is_unspecified
+    except ValueError:
+        local = host == 'localhost' or host.endswith('.localhost')
+    print('local' if local else 'probe')
+except ValueError:
+    print('invalid')
+PYTHON
+)" || die "Unable to check the public MinIO URL."
+    case "$kind" in
+      local) warn "The MinIO URL $candidate uses loopback. External AI models cannot use it to reach this server." ;;
+      probe)
+        status="$(curl --silent --output /dev/null --write-out '%{http_code}' --connect-timeout 10 --max-time 20 \
+          -- "${candidate%/}/minio/health/ready")" || status=000
+        if [[ "$status" == 2[0-9][0-9] ]]; then
+          success "The MinIO public endpoint passed its health check from this server."
+          break
+        fi
+        if [[ "$status" == 000 ]]; then
+          warn "This server could not connect to ${candidate}. External AI models may be unable to read files."
+        else
+          warn "The MinIO endpoint returned HTTP ${status}. External model access is unverified."
+        fi ;;
+      invalid) warn "Enter a full HTTP or HTTPS URL, for example http://files.example.com:9000." ;;
+    esac
+    if [[ "$kind" != invalid ]]; then
+      warn "AI Tagging may fail."
+      if confirm "Use this URL and continue deployment?" n; then
+        info "Confirmed. Continuing with the current MinIO URL."
+        break
+      fi
+    fi
+    IFS= read -r -p 'New MinIO public URL (Enter to return): ' candidate || die "Cancelled. Returning to the main menu."
+    [[ -n "$candidate" ]] || die "Cancelled. Returning to the main menu."
+    candidate="${candidate%/}"
+  done
+  if [[ "$candidate" != "$saved_url" ]]; then
+    set_env MINIO_EXPOSE_URL "$candidate" || die "Could not save the MinIO URL."
+  fi
+}
+
 clear_minio_config() {
   set_env MINIO_EXPOSE_URL ""
   set_env MINIO_HOST ""
@@ -2026,13 +2560,13 @@ initialize_postgresql() {
   local password=""
   local database=""
 
-  info "1/4 初始化 PostgreSQL"
+  info "1/4 Configure PostgreSQL"
   while true; do
     choose_mode PostgreSQL
     if [[ "$SELECTED_MODE" == local ]]; then
       ensure_image_version dotenv_get set_env POSTGRES_VERSION PostgreSQL
-      prompt_required username "数据库用户名" basilos
-      prompt_secret_confirm password "数据库密码"
+      prompt_required username "Database username" basilos
+      prompt_secret_confirm password "Database password"
       database=basilos
 
       POSTGRES_MODE=local
@@ -2048,15 +2582,15 @@ initialize_postgresql() {
       if ops up middleware postgresql &&
         middleware_compose run --rm postgresql-init &&
         test_postgresql_local "$username" "$password" "$database"; then
-        success "本地 PostgreSQL 已部署，连接正常，vector 扩展可用。"
+        success "Local PostgreSQL is ready with the vector extension."
         return
       fi
     else
-      prompt_required host "PostgreSQL 地址"
-      prompt_port port "PostgreSQL 端口" 5432
-      prompt_required database "数据库名称" basilos
-      prompt_required username "数据库用户名" basilos
-      prompt_secret_confirm password "数据库密码"
+      prompt_required host "PostgreSQL host"
+      prompt_port port "PostgreSQL port" 5432
+      prompt_required database "Database name" basilos
+      prompt_required username "Database username" basilos
+      prompt_secret_confirm password "Database password"
 
       POSTGRES_MODE=external
       set_env POSTGRESQL_HOST "$host"
@@ -2068,7 +2602,7 @@ initialize_postgresql() {
       rebuild_compose_files
 
       if test_postgresql_external "$host" "$port" "$username" "$password" "$database"; then
-        success "外部 PostgreSQL 连接正常，vector 扩展可用。"
+        success "External PostgreSQL is reachable with the vector extension."
         return
       fi
     fi
@@ -2084,12 +2618,12 @@ initialize_redis() {
   local database=""
   local use_tls=false
 
-  info "2/4 初始化 Redis"
+  info "2/4 Configure Redis"
   while true; do
     choose_mode Redis
     if [[ "$SELECTED_MODE" == local ]]; then
       ensure_image_version dotenv_get set_env REDIS_VERSION Redis
-      prompt_secret_confirm password "Redis 密码"
+      prompt_secret_confirm password "Redis password"
 
       REDIS_MODE=local
       set_env REDIS_HOST redis
@@ -2101,15 +2635,15 @@ initialize_redis() {
 
       prepare_owned_directory "$DEPLOY_DIR/data/redis"
       if ops up middleware redis && test_redis_local "$password"; then
-        success "本地 Redis 已部署并通过连接测试。"
+        success "Local Redis is ready."
         return
       fi
     else
-      prompt_required host "Redis 地址"
-      prompt_port port "Redis 端口" 6379
-      prompt_secret_confirm password "Redis 密码"
-      prompt_required database "Redis 数据库编号" 0
-      if confirm "Redis 是否启用 TLS？" n; then use_tls=true; else use_tls=false; fi
+      prompt_required host "Redis host"
+      prompt_port port "Redis port" 6379
+      prompt_secret_confirm password "Redis password"
+      prompt_required database "Redis database number" 0
+      if confirm "Use TLS for Redis?" n; then use_tls=true; else use_tls=false; fi
 
       REDIS_MODE=external
       set_env REDIS_HOST "$host"
@@ -2120,7 +2654,7 @@ initialize_redis() {
       rebuild_compose_files
 
       if test_redis_external "$host" "$port" "$password" "$use_tls"; then
-        success "外部 Redis 连接正常。"
+        success "External Redis is reachable."
         return
       fi
     fi
@@ -2138,13 +2672,13 @@ initialize_rabbitmq() {
   local virtual_host=""
   local local_management_port=""
 
-  info "3/4 初始化 RabbitMQ"
+  info "3/4 Configure RabbitMQ"
   while true; do
     choose_mode RabbitMQ
     if [[ "$SELECTED_MODE" == local ]]; then
       ensure_image_version dotenv_get set_env RABBITMQ_VERSION RabbitMQ
-      prompt_required username "RabbitMQ 用户名" basilos
-      prompt_secret_confirm password "RabbitMQ 密码"
+      prompt_required username "RabbitMQ username" basilos
+      prompt_secret_confirm password "RabbitMQ password"
 
       RABBITMQ_MODE=local
       set_env RABBITMQ_HOST rabbitmq
@@ -2159,15 +2693,15 @@ initialize_rabbitmq() {
       local_management_port="$(dotenv_get RABBITMQ_MANAGEMENT_HOST_PORT)"
       if ops up middleware rabbitmq &&
         test_rabbitmq_endpoint 127.0.0.1 "$(dotenv_get RABBITMQ_MANAGEMENT_HOST_PORT)" "$username" "$password"; then
-        success "本地 RabbitMQ 已部署并通过连接测试。"
+        success "Local RabbitMQ is ready."
         return
       fi
     else
-      prompt_required host "RabbitMQ 地址"
-      prompt_port port "RabbitMQ 端口" 5672
-      prompt_port management_port "RabbitMQ 管理端口" 15672
-      prompt_required username "RabbitMQ 用户名" basilos
-      prompt_secret_confirm password "RabbitMQ 密码"
+      prompt_required host "RabbitMQ host"
+      prompt_port port "RabbitMQ port" 5672
+      prompt_port management_port "RabbitMQ management port" 15672
+      prompt_required username "RabbitMQ username" basilos
+      prompt_secret_confirm password "RabbitMQ password"
       prompt_required virtual_host "RabbitMQ Virtual Host" /basilos
 
       RABBITMQ_MODE=external
@@ -2180,7 +2714,7 @@ initialize_rabbitmq() {
       rebuild_compose_files
 
       if test_rabbitmq_endpoint "$host" "$management_port" "$username" "$password"; then
-        success "外部 RabbitMQ 管理接口连接正常。"
+        success "External RabbitMQ management API is reachable."
         return
       fi
     fi
@@ -2195,12 +2729,14 @@ configure_local_minio() {
   local expose_port=""
 
   ensure_image_version dotenv_get set_env MINIO_VERSION MinIO
-  prompt_required username "MinIO 用户名" basilos
-  prompt_secret_confirm password "MinIO 密码"
-  ensure_deployment_access_host
-  expose_port="$(dotenv_get MINIO_API_HOST_PORT)"
-  info "MinIO API 当前 Compose 对外端口：${expose_port}；使用 HTTPS 或反向代理时请覆盖默认值。"
-  prompt_url expose_url "AI 模型可访问的 MinIO 地址" "$(deployment_access_url "$expose_port")"
+  prompt_required username "MinIO username" basilos
+  prompt_secret_confirm password "MinIO password"
+  expose_url="$(dotenv_get MINIO_EXPOSE_URL)"
+  if [[ -z "$expose_url" || "$expose_url" == *CHANGE_ME* ]]; then
+    ensure_deployment_access_host
+    expose_port="$(dotenv_get MINIO_API_HOST_PORT)"
+    prompt_url expose_url "MinIO URL accessible to the AI model" "$(deployment_access_url "$expose_port")"
+  fi
 
   STORAGE_MODE=local
   set_env FILE_SERVICE_SELECTOR minio
@@ -2217,8 +2753,8 @@ configure_local_minio() {
 
   prepare_owned_directory "$DEPLOY_DIR/data/minio"
   ops up middleware minio &&
-    middleware_compose exec -T minio curl --fail --silent http://127.0.0.1:9000/minio/health/ready >/dev/null &&
-    test_url_reachable "$(dotenv_get MINIO_EXPOSE_URL)/minio/health/ready"
+    middleware_compose exec -T minio curl --fail --silent http://127.0.0.1:9000/minio/health/ready >/dev/null </dev/null &&
+    check_minio_public_url
 }
 
 configure_external_minio() {
@@ -2228,11 +2764,13 @@ configure_external_minio() {
   local password=""
   local expose_url=""
 
-  prompt_required host "MinIO 地址（不含协议）"
-  prompt_port port "MinIO API 端口" 9000
-  prompt_required username "MinIO 用户名"
-  prompt_secret_confirm password "MinIO 密码"
-  prompt_url expose_url "AI 模型可访问的 MinIO 地址" "http://$host:$port"
+  prompt_required host "MinIO hostname or IP"
+  prompt_port port "MinIO API port" 9000
+  prompt_required username "MinIO username"
+  prompt_secret_confirm password "MinIO password"
+  expose_url="$(dotenv_get MINIO_EXPOSE_URL)"
+  [[ -n "$expose_url" && "$expose_url" != *CHANGE_ME* ]] || expose_url="http://$host:$port"
+  prompt_url expose_url "MinIO URL accessible to the AI model" "$expose_url"
 
   STORAGE_MODE=external
   set_env FILE_SERVICE_SELECTOR minio
@@ -2247,7 +2785,7 @@ configure_external_minio() {
   clear_azure_blob_config
   rebuild_compose_files
 
-  test_url_reachable "$expose_url/minio/health/ready"
+  check_minio_public_url
 }
 
 configure_aliyun_oss() {
@@ -2259,7 +2797,7 @@ configure_aliyun_oss() {
   prompt_required access_id "OSS AccessKey ID"
   prompt_secret_confirm access_key "OSS AccessKey Secret"
   prompt_url endpoint "OSS Endpoint"
-  prompt_required bucket "OSS Bucket 名称" studio
+  prompt_required bucket "OSS bucket name" studio
 
   STORAGE_MODE=external
   set_env FILE_SERVICE_SELECTOR aliyun-oss
@@ -2282,8 +2820,8 @@ configure_azure_blob() {
   local endpoint=""
   local container=""
 
-  prompt_required account_name "Azure Storage 账户名称"
-  prompt_secret_confirm account_key "Azure Storage 账户密钥"
+  prompt_required account_name "Azure Storage account name"
+  prompt_secret_confirm account_key "Azure Storage account key"
   prompt_url endpoint "Azure Blob Endpoint"
   prompt_required container "Azure Blob Container" studio
 
@@ -2304,12 +2842,12 @@ configure_azure_blob() {
 
 initialize_storage() {
   reuse_middleware storage && return 0
-  info "4/4 初始化对象存储"
+  info "4/4 Configure object storage"
   while true; do
-    choose_mode "对象存储"
+    choose_mode "Object storage"
     if [[ "$SELECTED_MODE" == local ]]; then
       if configure_local_minio; then
-        success "本地 MinIO 已部署，内部和公开地址均可访问。"
+        success "Local MinIO is ready."
         break
       fi
     else
@@ -2323,8 +2861,10 @@ initialize_storage() {
     retry_configuration
   done
 
-  success "对象存储地址可从当前服务器访问。"
-  warn "AI 打标还要求实际使用的 AI 模型能够访问对象存储生成的文件地址，请从模型所在网络完成验证。"
+  if [[ "$(dotenv_get FILE_SERVICE_SELECTOR)" != minio ]]; then
+    success "This server can reach the storage endpoint."
+  fi
+  warn "Check file access from the AI model network for AI Tagging."
 }
 
 ensure_studio_configuration() {
@@ -2340,7 +2880,7 @@ ensure_studio_configuration() {
 
   encryptor_password="$(studio_get_env ENCRYPTOR_PASSWORD)"
   if [[ -z "$encryptor_password" || "$encryptor_password" == CHANGE_ME_* ]]; then
-    prompt_secret_confirm encryptor_password "Studio 数据加密密码"
+    prompt_secret_confirm encryptor_password "Studio data encryption password"
     studio_set_env ENCRYPTOR_PASSWORD "$encryptor_password"
   fi
 
@@ -2352,8 +2892,8 @@ ensure_studio_configuration() {
   else
     ensure_deployment_access_host
     studio_frontend_port="$(studio_get_env STUDIO_FRONTEND_HOST_PORT)"
-    info "Studio Frontend 当前 Compose 对外端口：${studio_frontend_port}；使用 HTTPS 或反向代理时请覆盖默认值。"
-    prompt_url studio_frontend_url "Studio 前端访问地址" "$(deployment_access_url "$studio_frontend_port")"
+    info "Studio frontend host port: ${studio_frontend_port}. Use the external URL for HTTPS or a reverse proxy."
+    prompt_url studio_frontend_url "Studio frontend URL" "$(deployment_access_url "$studio_frontend_port")"
   fi
   studio_set_env ASSETS_SEARCH_SNAPSHOT_URL "${studio_frontend_url%/}$assets_path"
   studio_set_env VIEW_SNAPSHOT_URL "${studio_frontend_url%/}/basilos/studio/engine/multi-dim-table-embed"
@@ -2362,7 +2902,7 @@ ensure_studio_configuration() {
 deploy_studio() {
   local studio_frontend_url=""
 
-  info "部署 Basil Studio"
+  info "Deploy Studio"
   enforce_studio_cookie_mode
   ensure_studio_configuration
   mkdir -p "$DEPLOY_DIR/data/studio-logs"
@@ -2371,8 +2911,8 @@ deploy_studio() {
   studio_compose ps
   studio_frontend_url="$(studio_get_env ASSETS_SEARCH_SNAPSHOT_URL)"
   studio_frontend_url="${studio_frontend_url%/basilos/asset/search-embed}"
-  success "Basil Studio 容器已启动，访问地址：$studio_frontend_url"
-  info "仍需按部署文档检查后端迁移、HTTP 重定向、登录和业务功能；running 不代表应用已就绪。"
+  success "Studio is running at $studio_frontend_url"
+  info "Verify migrations, HTTP redirects, login and application workflows."
 }
 
 workbench_compose() {
@@ -2428,13 +2968,13 @@ ensure_workbench_url() {
     ensure_deployment_access_host
     default_url="$(deployment_access_url "$port")"
   elif ! parse_url "$configured_url"; then
-    warn "$label 当前值无效：$configured_url"
+    warn "Invalid $label value: $configured_url"
     ensure_deployment_access_host
     default_url="$(deployment_access_url "$port")"
   fi
 
   if [[ -n "$default_url" ]]; then
-    info "$label 当前 Compose 对外端口：${port}；使用 HTTPS 或反向代理时请覆盖默认值。"
+    info "$label uses host port ${port}. Enter the external URL for HTTPS or a reverse proxy."
     prompt_url configured_url "$label" "$default_url"
     workbench_set_env "$key" "$configured_url"
   fi
@@ -2461,21 +3001,21 @@ ensure_workbench_generated_secret() {
   value="$(workbench_get_env "$key")"
   if workbench_value_needs_configuration "$value"; then
     workbench_set_env "$key" "$(generate_secret)"
-    info "已生成 Workbench 密钥：$key"
+    info "Generated Workbench secret: $key"
   fi
 }
 
 prepare_workbench_env() {
-  [[ -f "$WORKBENCH_COMPOSE_FILE" ]] || die "缺少 docker-compose.workbench.yaml"
-  [[ -f "$WORKBENCH_ENV_TEMPLATE" ]] || die "缺少 .env.workbench.example"
-  [[ -f "$WORKBENCH_CHECK_SCRIPT" ]] || die "缺少 check-workbench.sh"
-  [[ -f "$DEPLOY_DIR/workbench/storage/nginx/runtime-nginx.conf" ]] || die "缺少 workbench/storage/nginx/runtime-nginx.conf"
-  [[ -f "$DEPLOY_DIR/workbench/storage/templates/AGENTS.md" && -r "$DEPLOY_DIR/workbench/storage/templates/AGENTS.md" && ! -L "$DEPLOY_DIR/workbench/storage/templates/AGENTS.md" ]] || die "缺少可读的普通文件 workbench/storage/templates/AGENTS.md（不允许符号链接）"
+  [[ -f "$WORKBENCH_COMPOSE_FILE" ]] || die "Missing docker-compose.workbench.yaml"
+  [[ -f "$WORKBENCH_ENV_TEMPLATE" ]] || die "Missing .env.workbench.example"
+  [[ -f "$WORKBENCH_CHECK_SCRIPT" ]] || die "Missing check-workbench.sh"
+  [[ -f "$DEPLOY_DIR/workbench/storage/nginx/runtime-nginx.conf" ]] || die "Missing workbench/storage/nginx/runtime-nginx.conf"
+  [[ -f "$DEPLOY_DIR/workbench/storage/templates/AGENTS.md" && -r "$DEPLOY_DIR/workbench/storage/templates/AGENTS.md" && ! -L "$DEPLOY_DIR/workbench/storage/templates/AGENTS.md" ]] || die "Expected a readable regular file at workbench/storage/templates/AGENTS.md."
 
-  [[ ! -L "$WORKBENCH_ENV_FILE" ]] || die "拒绝修改符号链接环境文件：$WORKBENCH_ENV_FILE"
+  [[ ! -L "$WORKBENCH_ENV_FILE" ]] || die "Refusing to edit a symlink: $WORKBENCH_ENV_FILE"
   if [[ ! -f "$WORKBENCH_ENV_FILE" ]]; then
     cp "$WORKBENCH_ENV_TEMPLATE" "$WORKBENCH_ENV_FILE"
-    info "已创建 $WORKBENCH_ENV_FILE"
+    info "Created $WORKBENCH_ENV_FILE"
   fi
   chmod 600 "$WORKBENCH_ENV_FILE"
 }
@@ -2486,7 +3026,7 @@ sync_workbench_shared_configuration() {
 
   studio_vhost="$(dotenv_get RABBITMQ_VIRTUAL_HOST)"
   storage_url="$(dotenv_get MINIO_EXPOSE_URL)"
-  parse_url "$storage_url" || die "MINIO_EXPOSE_URL 不是有效的 HTTP(S) 地址：$storage_url"
+  parse_url "$storage_url" || die "Invalid HTTP(S) URL in MINIO_EXPOSE_URL: $storage_url"
 
   workbench_set_env WORKBENCH_DEPLOYMENT_ROOT "$DEPLOY_DIR"
   workbench_set_env REDIS_DATABASE 1
@@ -2501,12 +3041,12 @@ sync_workbench_shared_configuration() {
 
 ensure_workbench_gateway() {
   local gateway_url=""
-  # 平台网关代理 Studio 页面/API，不能从 Workbench 自身 API 地址推导。
+  # The frontend gateway proxies Studio, independently of the Workbench API URL.
   gateway_url="$(workbench_get_env BASILOS_GATEWAY_HOST)"
   if workbench_value_needs_configuration "$gateway_url"; then
-    prompt_url gateway_url "Studio 平台网关地址（须从 Workbench Frontend 容器可达）"
+    gateway_url="http://studio-frontend/"
   fi
-  parse_url "$gateway_url" || die "Studio 平台网关地址无效：$gateway_url"
+  parse_url "$gateway_url" || die "Invalid Studio gateway URL: $gateway_url"
   workbench_set_env BASILOS_GATEWAY_HOST "${gateway_url%/}/"
 }
 
@@ -2527,14 +3067,14 @@ configure_workbench() {
   api_port="$(workbench_get_env WORKBENCH_HOST_PORT)"
   frontend_port="$(workbench_get_env WORKBENCH_FRONTEND_HOST_PORT)"
 
-  ensure_workbench_url APP_URL "Workbench API 的浏览器入口（通常与前端同源）" "$frontend_port"
+  ensure_workbench_url APP_URL "Workbench API browser URL" "$frontend_port"
   api_url="$WORKBENCH_VALUE"
-  parse_url "$api_url" || die "Workbench API 访问地址无效：$api_url"
+  parse_url "$api_url" || die "Invalid Workbench API URL: $api_url"
   workbench_set_env BASILCRAW_API_HOST "$URL_AUTHORITY"
 
   ensure_workbench_gateway
 
-  ensure_workbench_url FRONTEND_URL "Workbench 前端访问地址" "$frontend_port"
+  ensure_workbench_url FRONTEND_URL "Workbench frontend URL" "$frontend_port"
   frontend_url="$WORKBENCH_VALUE"
   workbench_set_env FRONTEND_OAUTH_RESULT_URL "$frontend_url"
 
@@ -2545,10 +3085,10 @@ configure_workbench() {
 
   admin_password="$(workbench_get_env DEFAULT_USER_PASSWORD)"
   if workbench_value_needs_configuration "$admin_password"; then
-    prompt_secret_confirm admin_password "Workbench 新建/重置用户默认密码"
+    prompt_secret_confirm admin_password "Default password for newly created or reset Workbench users"
     workbench_set_env DEFAULT_USER_PASSWORD "$admin_password"
   fi
-  ensure_workbench_text RUNTIME_SANDBOX_HOST_ID "Sandbox Host 稳定标识"
+  ensure_workbench_text RUNTIME_SANDBOX_HOST_ID "Stable sandbox host ID"
 }
 
 check_workbench_placeholders() {
@@ -2559,7 +3099,7 @@ check_workbench_placeholders() {
     index(substr($0, index($0, "=") + 1), "CHANGE_ME") { print $1 }
   ' "$WORKBENCH_ENV_FILE")"
   if [[ -n "$keys" ]]; then
-    warn "Workbench 仍有未配置变量：$(printf '%s\n' "$keys" | tr '\n' ' ')"
+    warn "Unconfigured Workbench variables: $(printf '%s\n' "$keys" | tr '\n' ' ')"
     return 1
   fi
 }
@@ -2599,9 +3139,9 @@ deploy_workbench() {
   local middleware_network=""
   local sandbox_image=""
 
-  info "部署 Basil Workbench"
+  info "Deploy Workbench"
   if ! workbench_storage_supported; then
-    warn "当前 Workbench 部署模板仅支持 MinIO 对象存储。"
+    warn "Workbench requires MinIO object storage."
     return 1
   fi
 
@@ -2613,7 +3153,7 @@ deploy_workbench() {
 
   middleware_network="$(dotenv_get BASIL_NETWORK_NAME)"
   docker network inspect "$middleware_network" >/dev/null ||
-    die "Workbench 依赖的 Docker 网络不存在：$middleware_network"
+    die "Missing Workbench Docker network: $middleware_network"
   workbench_compose config --quiet
 
   sandbox_image="$(workbench_get_env RUNTIME_SANDBOX_IMAGE):$(workbench_get_env RUNTIME_SANDBOX_VERSION)"
@@ -2623,17 +3163,17 @@ deploy_workbench() {
   ops up workbench
   if ! test_workbench_http; then
     workbench_compose ps
-    die "Workbench 基础 HTTP 检查失败，请查看容器状态和日志。"
+    die "Workbench HTTP health checks failed. Check container status and logs."
   fi
   workbench_compose ps
-  success "Basil Workbench 部署完成并通过基础 HTTP 检查。"
-  info "Workbench 前端访问地址：$(workbench_get_env FRONTEND_URL)"
-  info "Workbench API 访问地址：$(workbench_get_env APP_URL)"
+  success "Workbench passed its HTTP health checks."
+  info "Workbench frontend URL: $(workbench_get_env FRONTEND_URL)"
+  info "Workbench API URL: $(workbench_get_env APP_URL)"
 }
 
 deploy_all() {
   if ! workbench_storage_supported; then
-    warn "一键部署需要使用 MinIO；当前未执行 Studio 或 Workbench 部署。"
+    warn "Deploying Studio and Workbench together requires MinIO."
     return 1
   fi
   deploy_studio
@@ -2642,7 +3182,7 @@ deploy_all() {
 
 prepare_deployment() {
   prepare
-  info "初始化中间件"
+  info "Configure middleware"
   initialize_postgresql
   initialize_redis
   initialize_rabbitmq
@@ -2653,10 +3193,10 @@ ensure_shared_network() {
   local network_name=""
 
   network_name="$(dotenv_get BASIL_NETWORK_NAME)"
-  [[ -n "$network_name" ]] || die "BASIL_NETWORK_NAME 不能为空。"
+  [[ -n "$network_name" ]] || die "BASIL_NETWORK_NAME is required."
   if ! docker network inspect "$network_name" >/dev/null 2>&1; then
     docker network create --label "ai.basilos.deploy.directory=$DEPLOY_DIR" "$network_name" >/dev/null
-    info "已创建共享网络：$network_name"
+    info "Created shared network: $network_name"
   fi
 }
 
@@ -2683,7 +3223,7 @@ update_service_version() {
 
   container_ids="$("$compose_command" ps -a -q "$service" 2>/dev/null || true)"
   if [[ -z "$container_ids" ]]; then
-    warn "$label 未由当前 Docker Compose 部署，无法通过此脚本更新。"
+    warn "This Compose project does not manage $label."
     return
   fi
 
@@ -2691,7 +3231,7 @@ update_service_version() {
   current_version="$("$getter" "$version_key")"
   prompt_image_version new_version "$label Docker tag" "$current_version"
   printf '%s: %s:%s -> %s:%s\n' "$label" "$image" "$current_version" "$image" "$new_version"
-  confirm "确认更新 ${label}？" "$confirm_default" || return
+  confirm "Update ${label}?" "$confirm_default" || return
 
   if [[ "${!version_key+x}" == x ]]; then
     previous_override_was_set=true
@@ -2709,32 +3249,32 @@ update_service_version() {
     unset "$version_key"
   fi
   if [[ "$pull_succeeded" != true ]]; then
-    warn "$label 镜像拉取失败；环境变量和现有容器均未修改。"
+    warn "Image pull failed for $label. The current configuration is intact."
     return 1
   fi
 
   safe_current_version="${current_version//[^A-Za-z0-9_.-]/_}"
   backup_file="${env_file}.bak.update-${service}-${safe_current_version}-$(date -u +%Y%m%dT%H%M%SZ)"
-  [[ ! -e "$backup_file" ]] || die "备份文件已存在：$backup_file"
+  [[ ! -e "$backup_file" ]] || die "Backup already exists: $backup_file"
   cp -a -- "$env_file" "$backup_file"
-  info "已备份环境文件：$backup_file"
+  info "Environment backup: $backup_file"
 
   "$setter" "$version_key" "$new_version"
   if "$compose_command" config --quiet &&
     compose_recreate "$compose_command" "$service"; then
     "$compose_command" ps "$service"
-    success "$label 已更新到 ${new_version}。"
+    success "Updated $label to ${new_version}."
     return
   fi
 
   cp -a -- "$backup_file" "$env_file"
-  warn "$label 更新失败，正在使用备份恢复 ${current_version}。"
+  warn "Update failed for $label. Restoring ${current_version}."
   if "$compose_command" config --quiet &&
     compose_recreate "$compose_command" "$service"; then
     "$compose_command" ps "$service"
-    warn "$label 已恢复到 ${current_version}；数据库迁移和外部副作用不会随镜像自动回滚。"
+    warn "Restored $label to ${current_version}. Review database migrations and external changes separately."
   else
-    warn "$label 自动恢复失败；环境文件已恢复，请立即检查容器和日志。"
+    warn "Restored the environment file. Automatic recovery of $label failed. Check its container and logs."
   fi
   return 1
 }
@@ -2744,25 +3284,25 @@ update_runtime_sandbox_image() {
   local safe_current_version="" container_id="" configured_image=""
 
   container_id="$(workbench_compose ps -a -q workbench-runtime-node)" || return 1
-  [[ -n "$container_id" ]] || { warn "Runtime 尚未部署，无法更新 Sandbox 配置。"; return 1; }
-  # Shell 环境变量优先于 env 文件，避免文件更新后仍使用外部旧值。
+  [[ -n "$container_id" ]] || { warn "Deploy Runtime before configuring the sandbox."; return 1; }
+  # Shell variables take precedence over env files.
   [[ -z "${RUNTIME_SANDBOX_VERSION+x}" ]] || {
-    warn "请先 unset RUNTIME_SANDBOX_VERSION，再运行更新。"
+    warn "Unset RUNTIME_SANDBOX_VERSION before updating."
     return 1
   }
   image="$(workbench_get_env RUNTIME_SANDBOX_IMAGE)"
   current_version="$(workbench_get_env RUNTIME_SANDBOX_VERSION)"
   prompt_image_version new_version "Runtime Sandbox Docker tag" "$current_version"
   printf 'Runtime Sandbox: %s:%s -> %s:%s\n' "$image" "$current_version" "$image" "$new_version"
-  confirm "更新将重建 Runtime，可能中断执行中的任务；确认继续？" y || return
+  confirm "Recreating Runtime may interrupt running tasks. Continue?" y || return
 
   if ! workbench_compose config --quiet || ! ops pull "$image:$new_version" --force; then
-    warn "配置检查或镜像拉取失败；环境文件和 Runtime 未修改。"
+    warn "Configuration check or image pull failed. Runtime was not updated."
     return 1
   fi
   safe_current_version="${current_version//[^A-Za-z0-9_.-]/_}"
   backup_file="${WORKBENCH_ENV_FILE}.bak.update-runtime-sandbox-${safe_current_version}-$(date -u +%Y%m%dT%H%M%SZ)"
-  [[ ! -e "$backup_file" ]] || die "备份文件已存在：$backup_file"
+  [[ ! -e "$backup_file" ]] || die "Backup already exists: $backup_file"
   cp -a -- "$WORKBENCH_ENV_FILE" "$backup_file" || return 1
   workbench_set_env RUNTIME_SANDBOX_VERSION "$new_version" || return 1
 
@@ -2772,17 +3312,17 @@ update_runtime_sandbox_image() {
     configured_image="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$container_id" |
       sed -n 's/^RUNTIME_SANDBOX_IMAGE=//p')" || return 1
     if [[ "$configured_image" == "$image:$new_version" ]]; then
-      success "Runtime 已重建并加载 Sandbox 镜像 ${image}:${new_version}；已有 Sandbox 不会被此脚本重建。"
+      success "Runtime now uses ${image}:${new_version} for new sandboxes."
       return
     fi
   fi
-  warn "Runtime 更新或配置验证失败。备份位于 ${backup_file}；请检查容器日志。未自动回退，避免掩盖已执行的启动迁移。"
+  warn "Runtime update failed. Check the logs and the backup at ${backup_file} before reverting migrations."
   return 1
 }
 
 workbench_env_exists() {
   if [[ ! -f "$WORKBENCH_ENV_FILE" ]]; then
-    warn "尚未生成 .env.workbench，请先部署 Workbench。"
+    warn "Deploy Workbench first to create .env.workbench."
     return 1
   fi
 }
@@ -2791,7 +3331,7 @@ service_update_menu() {
   local choice=""
 
   while true; do
-    printf '\n服务更新菜单：\n'
+    printf '\nUpdate server version\n'
     printf '  1) Studio API\n'
     printf '  2) Studio Frontend\n'
     printf '  3) Studio Node Sandbox\n'
@@ -2799,13 +3339,13 @@ service_update_menu() {
     printf '  5) Workbench Frontend\n'
     printf '  6) Workbench Runtime\n'
     printf '  7) Workbench Runtime Gateway\n'
-    printf '  8) Runtime Sandbox 镜像\n'
+    printf '  8) Runtime Sandbox image\n'
     printf '  9) PostgreSQL\n'
     printf ' 10) Redis\n'
     printf ' 11) RabbitMQ\n'
     printf ' 12) MinIO\n'
-    printf '  0) 返回\n'
-    read -r -p '请选择 [0-12]: ' choice
+    printf '  0) Back\n'
+    read -r -p 'Select [0-12]: ' choice
     case "$choice" in
       1)
         enforce_studio_cookie_mode
@@ -2821,7 +3361,7 @@ service_update_menu() {
         ;;
       4)
         if workbench_env_exists; then
-          warn "Workbench API 启动时可能执行数据库迁移，镜像恢复不会自动撤销迁移。"
+          warn "Workbench may run database migrations at startup. Reverting the image does not revert migrations."
           update_service_version "Workbench API" workbench_get_env workbench_set_env workbench_compose WORKBENCH_IMAGE WORKBENCH_VERSION workbench 300 y "$WORKBENCH_ENV_FILE"
         fi
         ;;
@@ -2830,69 +3370,23 @@ service_update_menu() {
       7) if workbench_env_exists; then update_service_version "Workbench Runtime Gateway" workbench_get_env workbench_set_env workbench_compose RUNTIME_NGINX_IMAGE RUNTIME_NGINX_VERSION workbench-runtime 300 y "$WORKBENCH_ENV_FILE"; fi ;;
       8) if workbench_env_exists; then update_runtime_sandbox_image; fi ;;
       9)
-        warn "更新 PostgreSQL 前必须完成数据库备份并确认版本升级兼容性。"
+        warn "Back up PostgreSQL and check version compatibility before updating."
         update_service_version PostgreSQL dotenv_get set_env middleware_compose POSTGRES_IMAGE POSTGRES_VERSION postgresql 240 n "$ENV_FILE"
         ;;
       10)
-        warn "更新 Redis 前必须完成备份并确认版本升级兼容性。"
+        warn "Back up Redis and check version compatibility before updating."
         update_service_version Redis dotenv_get set_env middleware_compose REDIS_IMAGE REDIS_VERSION redis 240 n "$ENV_FILE"
         ;;
       11)
-        warn "更新 RabbitMQ 前必须完成备份并确认版本升级兼容性。"
+        warn "Back up RabbitMQ and check version compatibility before updating."
         update_service_version RabbitMQ dotenv_get set_env middleware_compose RABBITMQ_IMAGE RABBITMQ_VERSION rabbitmq 240 n "$ENV_FILE"
         ;;
       12)
-        warn "更新 MinIO 前必须完成对象存储备份并确认版本升级兼容性。"
+        warn "Back up MinIO and check version compatibility before updating."
         update_service_version MinIO dotenv_get set_env middleware_compose MINIO_IMAGE MINIO_VERSION minio 240 n "$ENV_FILE"
         ;;
       0) return ;;
-      *) warn "请输入 0 到 12 之间的数字。" ;;
-    esac
-  done
-}
-
-stop_studio_services() {
-  studio_compose stop
-  success "Studio 服务已停止。"
-}
-
-stop_workbench_services() {
-  if ! workbench_env_exists; then
-    return
-  fi
-  workbench_compose stop
-  success "Workbench 服务已停止。"
-}
-
-stop_application_services() {
-  stop_workbench_services
-  stop_studio_services
-}
-
-stop_all_services() {
-  stop_application_services
-  middleware_compose stop
-  success "共享中间件已停止。"
-}
-
-service_stop_menu() {
-  local choice=""
-
-  while true; do
-    printf '\n服务停止菜单：\n'
-    printf '  1) 停止 Studio\n'
-    printf '  2) 停止 Workbench\n'
-    printf '  3) 停止 Studio + Workbench\n'
-    printf '  4) 停止全部（含共享中间件）\n'
-    printf '  0) 返回\n'
-    read -r -p '请选择 [0-4]: ' choice
-    case "$choice" in
-      1) if confirm "确认停止 Studio？" n; then stop_studio_services; fi ;;
-      2) if confirm "确认停止 Workbench？" n; then stop_workbench_services; fi ;;
-      3) if confirm "确认停止 Studio 和 Workbench？" n; then stop_application_services; fi ;;
-      4) if confirm "确认停止全部服务（含共享中间件）？" n; then stop_all_services; fi ;;
-      0) return ;;
-      *) warn "请输入 0 到 4 之间的数字。" ;;
+      *) warn "Enter a number from 0 to 12." ;;
     esac
   done
 }
@@ -2930,11 +3424,11 @@ show_container_health() {
   fi
 
   printf '\n%-20s %-28s %-12s %-10s %-8s %s\n' \
-    "项目" "服务" "状态" "健康度" "重启次数" "镜像"
+    "Project" "Service" "State" "Health" "Restarts" "Image"
   while read -r id; do
     [[ -n "$id" ]] || continue
     details="$(docker inspect --format \
-      '{{index .Config.Labels "com.docker.compose.project"}}{{"\t"}}{{index .Config.Labels "com.docker.compose.service"}}{{"\t"}}{{.Config.Image}}{{"\t"}}{{.State.Status}}{{"\t"}}{{if .State.Health}}{{.State.Health.Status}}{{else}}未配置{{end}}{{"\t"}}{{.State.ExitCode}}{{"\t"}}{{.RestartCount}}' \
+      '{{index .Config.Labels "com.docker.compose.project"}}{{"\t"}}{{index .Config.Labels "com.docker.compose.service"}}{{"\t"}}{{.Config.Image}}{{"\t"}}{{.State.Status}}{{"\t"}}{{if .State.Health}}{{.State.Health.Status}}{{else}}unconfigured{{end}}{{"\t"}}{{.State.ExitCode}}{{"\t"}}{{.RestartCount}}' \
       "$id" 2>/dev/null || true)"
     [[ -n "$details" ]] || continue
     IFS=$'\t' read -r project service image state health exit_code restarts <<< "$details"
@@ -2948,11 +3442,11 @@ show_container_health() {
   unlink "$ids_file"
 
   if ((count == 0)); then
-    warn "未找到 BasilOS Compose 容器。"
+    warn "No AosWork Compose containers found."
   elif ((issues == 0)); then
-    success "共检查 $count 个容器，未发现异常状态。"
+    success "Checked $count containers. All healthy."
   else
-    warn "共检查 $count 个容器，其中 $issues 个状态异常；请查看对应容器日志。"
+    warn "Checked $count containers. See logs for the $issues unhealthy containers."
   fi
 }
 
@@ -2962,17 +3456,37 @@ compose_recreate() { ops up "${1%_compose}" "$2" --recreate --no-deps; }
 ops() { python3 "$SUPPORT_DIR/deploy-support.py" "$@"; }
 
 environment_check() {
-  if ! command -v python3 >/dev/null || ! command -v curl >/dev/null ||
-    ! command -v docker >/dev/null || ! docker compose version >/dev/null 2>&1; then
-    confirm '缺少 Python 3、curl、Docker 或 Compose，是否安装缺少的组件？' y || return 1
-    bash "$SUPPORT_DIR/install-docker.sh" || return 1
+  local missing=() cmd help
+  if command -v python3 >/dev/null && ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 9))'; then
+    warn "Python 3.9 or later is required."; return 1
   fi
-  docker info >/dev/null 2>&1 || { warn 'Docker 未启动或无访问权限；Linux 可用 sudo bash deploy.sh。'; return 1; }
-  docker compose up --help | grep -q -- '--wait' || { warn 'Compose 版本过旧，请升级 Compose 插件。'; return 1; }
-  require_command python3
-  require_command curl
-  ops check-files || return 1
-  success "环境检查通过：$(uname -s)/$(uname -m)"
+  for cmd in python3 curl docker; do
+    command -v "$cmd" >/dev/null || missing+=("$cmd")
+  done
+  if [[ "$(uname -s)" == Linux ]]; then
+    for cmd in ss nginx certbot systemctl; do
+      command -v "$cmd" >/dev/null || missing+=("$cmd")
+    done
+  fi
+  help="$(docker compose up --help 2>/dev/null)" || help=""
+  [[ "$help" == *--wait* ]] || missing+=("Docker Compose v2 with --wait")
+  if (( ${#missing[@]} )); then
+    printf 'Missing requirement: %s\n' "${missing[@]}"
+    confirm 'Configure the server environment now?' n || return 1
+    bash "$SUPPORT_DIR/install-docker.sh" || return 1
+    help="$(docker compose up --help)" && [[ "$help" == *--wait* ]] || {
+      warn 'A Docker Compose plugin supporting --wait is required.'; return 1;
+    }
+  fi
+  if ! docker info >/dev/null 2>&1; then
+    if [[ "$(uname -s)" == Linux && "$EUID" == 0 ]] && ! systemctl is-active --quiet docker &&
+       confirm 'Start the Docker service?' n; then
+      bash "$SUPPORT_DIR/install-docker.sh" start || return 1
+    fi
+    docker info >/dev/null 2>&1 || { warn 'Docker daemon unavailable. Check its service and socket permissions.'; return 1; }
+  fi
+  ops preflight || return 1
+  success "Environment ready: $(uname -s)/$(uname -m)"
 }
 
 restore_middleware_modes() {
@@ -3009,10 +3523,9 @@ existing_middleware_test() {
       test_rabbitmq_endpoint "$host" "$port" "$(dotenv_get RABBITMQ_USERNAME)" "$(dotenv_get RABBITMQ_PASSWORD)" ;;
     minio)
       if [[ "$STORAGE_MODE" == local ]]; then
-        middleware_compose exec -T minio curl --fail --silent http://127.0.0.1:9000/minio/health/ready >/dev/null
-      else
-        curl --fail --silent --show-error --connect-timeout 10 --max-time 20 "$(dotenv_get MINIO_EXPOSE_URL)/minio/health/ready" >/dev/null
-      fi ;;
+        middleware_compose exec -T minio curl --fail --silent http://127.0.0.1:9000/minio/health/ready >/dev/null </dev/null || return 1
+      fi
+      check_minio_public_url ;;
     aliyun-oss) test_url_reachable "$(dotenv_get ALI_OSS_ENDPOINT)" ;;
     azure-blob) test_url_reachable "$(dotenv_get AZURE_BLOB_ENDPOINT)" ;;
   esac
@@ -3037,28 +3550,28 @@ reuse_middleware() {
     value="$(dotenv_get "$key")"
     if [[ -z "$value" || "$value" == *CHANGE_ME* ]]; then
       if [[ "$mode" == local ]] && [[ -n "$(middleware_compose ps -a -q "$service" 2>/dev/null)" ]]; then
-        die "$service 已有容器但配置不完整；请恢复原 .env.middleware，不能用新密码覆盖已有数据。"
+        die "$service has existing containers with incomplete configuration. Restore the original .env.middleware credentials."
       fi
       return 1
     fi
   done < <(printf '%s\n' "$keys" | tr ' ' '\n')
   while true; do
-    info "检查已有 ${service}（复用环境文件中的连接信息）"
+    info "Checking existing ${service} with its configured credentials"
     if existing_middleware_test "$service"; then
-      success "$service 检查通过，跳过配置和重新部署。"
+      success "Reusing $service."
       return 0
     fi
-    printf '  1) 用原配置启动/恢复本地服务  2) 重新检查  3) 重新配置  0) 返回主菜单\n'
-    read -r -p '请选择 [0-3]: ' choice
+    printf '  1) Recover local service  2) Check again  3) Reconfigure  0) Back\n'
+    read -r -p 'Select [0-3]: ' choice
     case "$choice" in
       1)
         if [[ "$mode" == local ]]; then
-          ops up middleware "$service" || die "$service 恢复失败；配置已保留。"
-          if [[ "$service" == postgresql ]]; then middleware_compose run --rm postgresql-init || die '数据库初始化失败。'; fi
-        else warn '此服务是外部中间件，请在服务所在主机恢复。'; fi ;;
+          ops up middleware "$service" || die "Recovery failed for $service. Existing configuration retained."
+          if [[ "$service" == postgresql ]]; then middleware_compose run --rm postgresql-init || die 'Database initialization failed.'; fi
+        else warn 'Recover this external service on its own host.'; fi ;;
       2) ;;
-      3) confirm "确认重新配置 ${service}？已有数据的密码不会被自动重置。" n && return 1 ;;
-      0) die '已保留配置，结束本次部署。' ;;
+      3) confirm "Reconfigure ${service}? Existing database passwords will not be reset." n && return 1 ;;
+      0) die 'Configuration retained. Stopping deployment.' ;;
     esac
   done
 }
@@ -3067,10 +3580,10 @@ restart_services() {
   local group="$1" service="${2-}" frontend id
   if [[ -n "$service" ]]; then
     id="$("${group}_compose" ps -a -q "$service")"
-    [[ -n "$id" ]] || die '该服务尚未部署，请先用安装菜单。'
+    [[ -n "$id" ]] || die 'Deploy the service first.'
     ops up "$group" "$service" --recreate --no-deps
   else
-    [[ -n "$("${group}_compose" ps -a -q)" ]] || die '该项目尚未部署，请先用安装菜单。'
+    [[ -n "$("${group}_compose" ps -a -q)" ]] || die 'Deploy this project first.'
     ops up "$group" --recreate
   fi
   # Refresh static backend DNS after recreation.
@@ -3080,13 +3593,13 @@ restart_services() {
       "${group}_compose" exec -T "$frontend" nginx -s reload
     fi
   done
-  success '服务已重新创建，环境文件中的修改已生效。'
+  success 'Services recreated with the current environment.'
 }
 
 service_restart_menu() {
   local choice group service
-  printf '\n重启并加载环境变量：\n  1) Studio 全部\n  2) Workbench 全部\n  3) Studio API\n  4) Studio Frontend\n  5) Node Sandbox\n  6) Workbench API\n  7) Workbench Frontend\n  8) Runtime Node\n  9) Runtime Gateway\n  10) PostgreSQL\n  11) Redis\n  12) RabbitMQ\n  13) MinIO\n  0) 返回\n'
-  read -r -p '请选择 [0-13]: ' choice
+  printf '\nRestart server\n  1) All Studio services\n  2) All Workbench services\n  3) Studio API\n  4) Studio Frontend\n  5) Node Sandbox\n  6) Workbench API\n  7) Workbench Frontend\n  8) Runtime Node\n  9) Runtime Gateway\n  10) PostgreSQL\n  11) Redis\n  12) RabbitMQ\n  13) MinIO\n  0) Back\n'
+  read -r -p 'Select [0-13]: ' choice
   case "$choice" in
     0) return ;; 1) restart_services studio ;; 2) restart_services workbench ;;
     3) restart_services studio studio ;; 4) restart_services studio studio-frontend ;;
@@ -3094,7 +3607,7 @@ service_restart_menu() {
     7) restart_services workbench workbench-frontend ;; 8) restart_services workbench workbench-runtime-node ;;
     9) restart_services workbench workbench-runtime ;; 10) restart_services middleware postgresql ;;
     11) restart_services middleware redis ;; 12) restart_services middleware rabbitmq ;; 13) restart_services middleware minio ;;
-    *) warn '选项无效。' ;;
+    *) warn 'Invalid selection.' ;;
   esac
 }
 
@@ -3104,7 +3617,7 @@ run_menu_action() {
   ( set -Eeuo pipefail; "$@" )
   status=$?
   set -e
-  [[ "$status" -eq 0 ]] || warn "操作未完成（退出码 ${status}），已返回菜单；请根据上方原因处理后重试。"
+  [[ "$status" -eq 0 ]] || warn "Action failed (exit ${status}). Review the error above and retry."
 }
 
 install_selected() {
@@ -3113,105 +3626,102 @@ install_selected() {
 }
 
 maintenance_selected() {
-  prepare
+  prepare_health_check
   "$@"
 }
 
-diagnose_environment() {
-  prepare
-  local group
-  for group in middleware studio workbench; do
-    ops check-images "$group"
-  done
-  ops pull "$(workbench_get_env RUNTIME_SANDBOX_IMAGE):$(workbench_get_env RUNTIME_SANDBOX_VERSION)"
-}
-
-perform_action() {
-  case "$1" in
-    1) install_selected deploy_all ;;
-    2) install_selected deploy_studio ;;
-    3) install_selected deploy_workbench ;;
-    4) maintenance_selected service_update_menu ;;
-    5) prepare_health_check; show_container_health ;;
-    6) prepare_health_check; service_stop_menu ;;
-    7) maintenance_selected service_restart_menu ;;
-    8) maintenance_selected bash "${SUPPORT_DIR:-$DEPLOY_DIR}/setup-domain-ssl.sh" ;;
-    9) diagnose_environment ;;
+deploy_menu() {
+  local choice
+  printf '\nDeploy AosWork\n  1) Deploy Studio\n  2) Deploy Workbench\n  3) Deploy Studio and Workbench\n  0) Back\n'
+  read -r -p 'Select [3]: ' choice || return 0
+  case "${choice:-3}" in
+    1) install_selected deploy_studio ;;
+    2) install_selected deploy_workbench ;;
+    3) install_selected deploy_all ;;
+    0) return 0 ;;
+    *) warn 'Invalid selection.' ;;
   esac
 }
 
-installed_action() {
-  if [[ -f "$DEPLOY_DIR/.aos-selected.sh" ]]; then
-    # Start a fresh Bash so historical scripts use their own functions and helper paths.
-    bash -c "$(declare -f perform_action)"$'\nsource "$1"\nperform_action "$2"' bash "$DEPLOY_DIR/.aos-selected.sh" "$1"
-  else
-    perform_action "$1"
-  fi
-}
-
 package_install() {
-  require_command python3
   local status=0
   python3 "$SUPPORT_DIR/release-install.py" "$1" || status=$?
   case "$status" in
-    0) installed_action 1 ;;
+    0) ops preflight ;;
     2) return 0 ;;
     *) return "$status" ;;
   esac
 }
 
-deployment_menu() {
-  local choice=""
+show_banner() {
+  cat <<'BANNER'
 
+    ___              _       __           __
+   /   | ____  _____| |     / /___  _____/ /__
+  / /| |/ __ \/ ___/| | /| / / __ \/ ___/ //_/
+ / ___ / /_/ (__  ) | |/ |/ / /_/ / /  / ,<
+/_/  |_\____/____/  |__/|__/\____/_/  /_/|_|
+
+             AosWork Deploy V1.0.0
+
+BANNER
+}
+
+deployment_menu() {
+  local choice
   while true; do
-    printf '\nBasilOS 部署与运维菜单：\n'
-    printf '  1) 配置并部署 Studio + Workbench\n'
-    printf '  2) 配置并部署 Studio\n'
-    printf '  3) 配置并部署 Workbench\n'
-    printf '  4) 更新已部署服务的 Docker tag\n'
-    printf '  5) 查看容器健康度\n'
-    printf '  6) 停止服务\n'
-    printf '  7) 重启服务（加载最新环境变量）\n'
-    printf '  8) 配置域名与 HTTPS\n'
-    printf '  9) 环境、部署文件与镜像检查\n'
-    printf '  10) 选择版本、下载并安装部署包\n'
-    printf '  11) 完全删除当前部署（容器、镜像及本地数据）\n'
-    printf '  0) 退出\n'
-    read -r -p '请选择 [0-11]: ' choice || return 0
+    cat <<'MENU'
+
+  1) Set up domain and HTTPS
+  2) Select server packages
+  3) Deploy AosWork
+  4) Update server version
+  5) Restart server
+  6) View server health
+  7) Delete deployment settings
+  0) Exit
+MENU
+    read -r -p 'Select [0-7]: ' choice || return 0
     case "$choice" in
-      [1-9]) run_menu_action installed_action "$choice" ;;
-      10) run_menu_action package_install choose ;;
-      11) run_menu_action python3 "$SUPPORT_DIR/reset-deployment.py" ;;
-      0) return ;;
-      *) warn "请输入 0 到 11 之间的数字。" ;;
+      1) run_menu_action bash "$SUPPORT_DIR/setup-domain-ssl.sh" ;;
+      2) run_menu_action package_install choose ;;
+      3) run_menu_action deploy_menu ;;
+      4) run_menu_action maintenance_selected service_update_menu ;;
+      5) run_menu_action maintenance_selected service_restart_menu ;;
+      6) run_menu_action show_container_health ;;
+      7) run_menu_action python3 "$SUPPORT_DIR/reset-deployment.py"
+         [[ -f "$DEPLOY_DIR/.aos-install/baseline.json" && ! -f "$DEPLOY_DIR/.aos-install/cleanup-pending" ]] || return 0 ;;
+      0) return 0 ;;
+      *) warn 'Select a number from 0 to 7.' ;;
     esac
   done
 }
 
 prepare() {
-  [[ -t 0 ]] || die "该脚本需要在交互式终端中运行。"
-  environment_check || die "环境检查未通过。"
+  [[ -t 0 ]] || die "Run this action in an interactive terminal."
+  [[ -f "$STUDIO_COMPOSE_FILE" ]] || die "Select a server package in menu 2 first."
+  ops check-files
   require_command docker
   require_command curl
   docker compose version >/dev/null
-  docker info >/dev/null 2>&1 || die "Docker 服务不可用或当前用户无权访问。"
-  [[ -f "$MIDDLEWARE_COMPOSE_FILE" ]] || die "缺少 compose/middleware.yaml"
-  [[ -f "$STUDIO_COMPOSE_FILE" ]] || die "缺少 docker-compose.studio.yaml"
-  [[ -f "$ENV_TEMPLATE" ]] || die "缺少 .env.middleware.example"
-  [[ -f "$STUDIO_ENV_TEMPLATE" ]] || die "缺少 .env.studio.example"
+  docker info >/dev/null 2>&1 || die "Check Docker daemon status and access permissions."
+  [[ -f "$MIDDLEWARE_COMPOSE_FILE" ]] || die "Missing compose/middleware.yaml"
+  [[ -f "$STUDIO_COMPOSE_FILE" ]] || die "Missing docker-compose.studio.yaml"
+  [[ -f "$ENV_TEMPLATE" ]] || die "Missing .env.middleware.example"
+  [[ -f "$STUDIO_ENV_TEMPLATE" ]] || die "Missing .env.studio.example"
 
   cd "$DEPLOY_DIR"
-  [[ ! -L "$ENV_FILE" ]] || die "拒绝修改符号链接环境文件：$ENV_FILE"
+  [[ ! -L "$ENV_FILE" ]] || die "Refusing to edit symlink: $ENV_FILE"
   if [[ ! -f "$ENV_FILE" ]]; then
     cp "$ENV_TEMPLATE" "$ENV_FILE"
-    info "已创建 $ENV_FILE"
+    info "Created $ENV_FILE"
   fi
   chmod 600 "$ENV_FILE"
 
-  [[ ! -L "$STUDIO_ENV_FILE" ]] || die "拒绝修改符号链接环境文件：$STUDIO_ENV_FILE"
+  [[ ! -L "$STUDIO_ENV_FILE" ]] || die "Refusing to edit symlink: $STUDIO_ENV_FILE"
   if [[ ! -f "$STUDIO_ENV_FILE" ]]; then
     cp "$STUDIO_ENV_TEMPLATE" "$STUDIO_ENV_FILE"
-    info "已创建 $STUDIO_ENV_FILE"
+    info "Created $STUDIO_ENV_FILE"
   fi
   chmod 600 "$STUDIO_ENV_FILE"
 
@@ -3223,11 +3733,11 @@ prepare() {
 prepare_health_check() {
   require_command docker
   docker compose version >/dev/null
-  docker info >/dev/null 2>&1 || die "Docker 服务不可用或当前用户无权访问。"
-  [[ -f "$MIDDLEWARE_COMPOSE_FILE" ]] || die "缺少 compose/middleware.yaml"
-  [[ -f "$STUDIO_COMPOSE_FILE" ]] || die "缺少 docker-compose.studio.yaml"
-  [[ -f "$ENV_FILE" ]] || die "缺少 .env.middleware，请先完成部署。"
-  [[ -f "$STUDIO_ENV_FILE" ]] || die "缺少 .env.studio，请先完成部署。"
+  docker info >/dev/null 2>&1 || die "Check Docker daemon status and access permissions."
+  [[ -f "$MIDDLEWARE_COMPOSE_FILE" ]] || die "Missing compose/middleware.yaml"
+  [[ -f "$STUDIO_COMPOSE_FILE" ]] || die "Missing docker-compose.studio.yaml"
+  [[ -f "$ENV_FILE" ]] || die "Missing .env.middleware. Select a package first."
+  [[ -f "$STUDIO_ENV_FILE" ]] || die "Missing .env.studio. Select a package first."
   cd "$DEPLOY_DIR"
 }
 
@@ -3268,12 +3778,11 @@ self_test() {
   [[ "$(workbench_get_env TEST_VALUE)" == "$expected" ]]
 
   (
-    prompt_url() { die "已有平台网关不应重复询问"; }
+    prompt_url() { die "Previously configured gateway should not prompt"; }
     workbench_set_env BASILOS_GATEWAY_HOST https://studio.example.com
     ensure_workbench_gateway
     [[ "$(workbench_get_env BASILOS_GATEWAY_HOST)" == https://studio.example.com/ ]]
     workbench_set_env BASILOS_GATEWAY_HOST CHANGE_ME_GATEWAY_URL
-    prompt_url() { printf -v "$1" '%s' http://studio-frontend; }
     ensure_workbench_gateway
     [[ "$(workbench_get_env BASILOS_GATEWAY_HOST)" == http://studio-frontend/ ]]
   )
@@ -3294,8 +3803,8 @@ self_test() {
   [[ "$(deployment_access_url 80)" == 'http://[2001:db8::1]:80' ]]
   DEPLOYMENT_ACCESS_HOST=
   ! container_state_is_abnormal running healthy 0
-  ! container_state_is_abnormal exited 未配置 0
-  container_state_is_abnormal exited 未配置 1
+  ! container_state_is_abnormal exited unconfigured 0
+  container_state_is_abnormal exited unconfigured 1
 
   (
     ensure_image_version workbench_get_env workbench_set_env TEST_VERSION Test <<< 'v1.2.3'
@@ -3307,7 +3816,7 @@ self_test() {
       printf -v "$1" '%s' "$3"
     }
     ensure_workbench_url APP_URL 'Test API' 38080 >/dev/null 2>&1
-    # HTTP 同源代理可以与内部 API 映射使用不同端口，不能覆盖已有公网地址。
+    # Public frontend and internal API endpoints can use separate ports.
     [[ "$WORKBENCH_VALUE" == 'http://deploy.example.com:31001' ]]
     workbench_set_env APP_URL CHANGE_ME_WORKBENCH_API_URL
     ensure_workbench_url APP_URL 'Test API' 38080 >/dev/null 2>&1
@@ -3349,7 +3858,7 @@ self_test() {
       TEST_IMAGE TEST_VERSION service 10 y "$workbench_test_file" >/dev/null
     [[ "$updated_key" == TEST_VERSION ]]
     [[ "$updated_value" == new ]]
-    # 初始 ps 运行在命令替换的子 Shell 中，不会修改父 Shell 的 calls。
+    # The initial ps runs in a subshell.
     [[ "$calls" == 'config pull config up ps ' ]]
     [[ "$up_arguments" == *'--no-deps'* ]]
     [[ "$up_arguments" == *'--pull'* ]]
@@ -3392,11 +3901,11 @@ self_test() {
 
   (
     local calls=""
-    prepare() {
+    prepare_health_check() {
       calls+="prepare "
     }
     run_menu_action() { "$@"; }
-    installed_action() { perform_action "$1"; }
+    environment_check() { :; }
     package_install() { :; }
     service_update_menu() {
       calls+="update"
@@ -3408,39 +3917,24 @@ self_test() {
     [[ "$calls" == 'prepare update' ]]
   )
 
-  (
-    local calls=""
-    workbench_env_exists() { return 0; }
-    workbench_compose() { calls+="workbench "; }
-    studio_compose() { calls+="studio "; }
-    middleware_compose() { calls+="middleware"; }
-    confirm() { return 0; }
-
-    service_stop_menu <<< $'4\n0\n' >/dev/null
-    [[ "$calls" == 'workbench studio middleware' ]]
-  )
-
   unlink "$test_file"
   unlink "$studio_test_file"
   unlink "$workbench_test_file"
   ENV_FILE="$original_env_file"
   STUDIO_ENV_FILE="$original_studio_env_file"
   WORKBENCH_ENV_FILE="$original_workbench_env_file"
-  success "deploy.sh 自检通过。"
+  success "deploy.sh self-test passed."
 }
 
 main() {
-  if [[ -f "$DEPLOY_DIR/.aos-selected.sh" && "${1-}" =~ ^--(health|check|update)$ && "${BASH_SOURCE[0]##*/}" != .aos-selected.sh ]]; then
-    bash "$DEPLOY_DIR/.aos-selected.sh" "$@"
-    return
-  fi
   case "${1-}" in
     --self-test)
       self_test
       return
       ;;
     --update)
-      [[ $# -eq 1 ]] || die "用法：./deploy.sh [--self-test|--update|--health|--check]"
+      [[ $# -eq 1 ]] || die "Usage: ./deploy.sh [--self-test|--update|--health|--check]"
+      environment_check
       prepare
       service_update_menu
       return
@@ -3450,15 +3944,45 @@ main() {
       return
       ;;
     --health)
-      [[ $# -eq 1 ]] || die "用法：./deploy.sh [--self-test|--update|--health|--check]"
+      [[ $# -eq 1 ]] || die "Usage: ./deploy.sh [--self-test|--update|--health|--check]"
       prepare_health_check
       show_container_health
       return
       ;;
     '') ;;
-    *) die "用法：./deploy.sh [--self-test|--update|--health|--check]" ;;
+    *) die "Usage: ./deploy.sh [--self-test|--update|--health|--check]" ;;
   esac
 
+  show_banner
+  if command -v flock >/dev/null; then
+    exec 9<"$DEPLOY_DIR"
+    flock -n 9 || die 'Another deployment session is open in this directory.'
+  fi
+  if [[ -f "$DEPLOY_DIR/.aos-install/cleanup-pending" ]]; then
+    if command -v python3 >/dev/null; then
+      python3 "$SUPPORT_DIR/reset-deployment.py"
+    elif [[ "$(cat "$DEPLOY_DIR/.aos-install/cleanup-pending")" == '"local-restored"' ]]; then
+      local answer
+      read -r -p "Resume host cleanup? Type DELETE $DEPLOY_DIR: " answer || return 0
+      if [[ "$answer" == "DELETE $DEPLOY_DIR" ]]; then
+        bash "$SUPPORT_DIR/host-state.sh" cleanup
+        rm -- "$DEPLOY_DIR/.aos-install/cleanup-pending"
+        rmdir "$DEPLOY_DIR/.aos-install" 2>/dev/null || true
+      fi
+    else
+      die 'Python 3 is required to finish restoring local deployment files.'
+    fi
+    return
+  fi
+  if ! environment_check; then
+    warn 'Server setup incomplete.'
+    if [[ -f "$DEPLOY_DIR/.aos-install/baseline.json" ]] && confirm 'Open deployment cleanup?' n; then
+      python3 "$SUPPORT_DIR/reset-deployment.py"
+    elif [[ "$(uname -s)" == Linux && "$EUID" == 0 ]]; then
+      bash "$SUPPORT_DIR/host-state.sh" recover
+    fi
+    return 1
+  fi
   if [[ -f "$DEPLOY_DIR/.aos-install/pending.json" ]]; then
     run_menu_action package_install resume
   fi
