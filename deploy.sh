@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aos-work deployment release: v2026.11.18.2
 
 set -Eeuo pipefail
 IFS=$'\n\t'
@@ -7,6 +8,460 @@ DEPLOY_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 export BASIL_DEPLOY_DIR="$DEPLOY_DIR"
 SUPPORT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/aos-work.XXXXXXXX")"
 trap 'rm -rf -- "$SUPPORT_DIR"' EXIT
+cat > "$SUPPORT_DIR/release-install.py" <<'AOS_EMBEDDED_FILE_END'
+"""Install public deployment files while preserving the operator's local configuration."""
+import argparse
+import gzip
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path, PurePosixPath
+import re
+import shutil
+import subprocess
+import tarfile
+import tempfile
+from urllib.parse import urlsplit
+
+RELEASES = 'https://github.com/basilos-ai/aos-work-release/releases'
+# Newest first. Add the new tag here when preparing a release.
+VERSIONS = {
+    'v2026.11.18.2': None,
+    'v2026.11.18.1': 'e328e235b52651e9e43c857767e4b844944dd1efba61624f7525767c0c705f76',
+    'v2026.11.18': 'b7f19f50f985f9fe93ba963cc7cdbbf6310fdc678faa5d1d76970e3b712d3429',
+}
+ENV = {'.env.' + g for g in ('middleware', 'studio', 'workbench')}
+WORKBENCH = {'workbench/storage/templates/AGENTS.md', 'workbench/storage/nginx/runtime-nginx.conf'}
+COMMON = WORKBENCH | {'deploy.sh', 'docker-compose.studio.yaml', 'docker-compose.workbench.yaml'}
+COMMON.update('compose/' + n + '.yaml' for n in ('db', 'cache', 'mq', 'storage'))
+MODERN = COMMON | ENV | {'compose/middleware.yaml'}
+LEGACY = COMMON | {n + '.example' for n in ENV} | {
+    'docker-compose.middleware.yaml', 'deploy-support.py', 'domain-ssl.py',
+    'setup-domain-ssl.sh', 'check-workbench.sh', 'install-docker.sh',
+}
+MAX_BYTES = 16 * 1024 * 1024
+
+
+def choose():
+    tags = list(VERSIONS)[:5]
+    print('选择安装包版本：')
+    for i, tag in enumerate(tags, 1):
+        print(f'  {i}) {tag}  {RELEASES}/download/{tag}/deploy.tar.gz')
+    print(f'更多历史版本：{RELEASES}\n也可粘贴可信来源的 HTTPS 安装包直链（deploy.tar.gz 或 deploy.tar）。')
+    value = input('版本序号 / 安装包直链（0 返回）：').strip()
+    if value == '0':
+        return None
+    if value.isdecimal() and 1 <= int(value) <= len(tags):
+        return f'{RELEASES}/download/{tags[int(value)-1]}/deploy.tar.gz'
+    tag_page = re.fullmatch(re.escape(RELEASES) + r'/tag/([A-Za-z0-9._-]+)', value)
+    if tag_page:
+        return f'{RELEASES}/download/{tag_page[1]}/deploy.tar.gz'
+    check_url(value)
+    return value
+
+
+def check_url(url):
+    parsed = urlsplit(url)
+    if parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password:
+        raise ValueError('请输入可信的 HTTPS 安装包直链。')
+    name = PurePosixPath(parsed.path).name
+    if name not in ('deploy.tar.gz', 'deploy.tar'):
+        raise ValueError('请粘贴 Release 附件 deploy.tar.gz 或 deploy.tar 的直链。')
+    return name
+
+
+def check_path(root, path):
+    # A live deployment may contain user-created symlinks.
+    if path.resolve() != path or root not in path.parents:
+        raise ValueError(f'拒绝写入符号链接或部署目录之外的路径：{path}')
+
+
+def unpack(archive, staging):
+    if archive.stat().st_size > MAX_BYTES:
+        raise ValueError('部署文件包超过大小上限。请选择 deploy.tar.gz 或 deploy.tar。')
+    if archive.name.endswith('.gz'):
+        with gzip.open(archive, 'rb') as stream:
+            if len(stream.read(MAX_BYTES + 1)) > MAX_BYTES:
+                raise ValueError('压缩包展开后过大。')
+    total = 0
+    seen = set()
+    with tarfile.open(archive, 'r:*') as bundle:
+        for entry in bundle:
+            path = PurePosixPath(entry.name)
+            if (path.is_absolute() or '..' in path.parts or path in seen or
+                    not (entry.isfile() or entry.isdir()) or len(seen) >= 256):
+                raise ValueError('压缩包含有不支持或重复的条目。')
+            seen.add(path)
+            total += entry.size
+            if total > MAX_BYTES:
+                raise ValueError('解压内容超过大小上限。')
+            if entry.isfile() and str(path) in MODERN | LEGACY:
+                dest = staging / path
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                with bundle.extractfile(entry) as src, dest.open('xb') as out:
+                    shutil.copyfileobj(src, out)
+                dest.chmod(0o755 if dest.suffix == '.sh' else 0o600 if dest.name.startswith('.env.') else 0o644)
+    for layout in (MODERN, LEGACY):
+        if all((staging / n).is_file() for n in layout):
+            return layout
+    raise ValueError('安装包缺少部署脚本、环境文件或 Compose 配置。')
+
+
+def install(root, folder, url):
+    name = check_url(url)
+    archive = folder / name
+    check_path(root, archive)
+    digest = None
+    for tag, known in VERSIONS.items():
+        if url == f'{RELEASES}/download/{tag}/deploy.tar.gz':
+            digest = known
+    sums = folder / 'SHA256SUMS'
+    check_path(root, sums)
+    if sums.is_file():
+        lines = sums.read_text().splitlines()
+        matches = [m[1] for line in lines if (m := re.fullmatch(r'([0-9a-f]{64})  '+re.escape(name), line))]
+        if len(matches) != 1 or (digest and digest != matches[0]):
+            raise ValueError('SHA256SUMS 与所选附件不匹配。')
+        digest = matches[0]
+    if archive.stat().st_size > MAX_BYTES:
+        raise ValueError('请选择部署文件包，当前文件过大。')
+    if digest and hashlib.sha256(archive.read_bytes()).hexdigest() != digest:
+        raise ValueError('SHA-256 不匹配，请重新上传所选版本。')
+    with tempfile.TemporaryDirectory(dir=folder) as tmp:
+        stage = Path(tmp)
+        layout = unpack(archive, stage)
+        subprocess.run(['bash', '-n', str(stage / 'deploy.sh')], check=True)
+        tag = re.fullmatch(re.escape(RELEASES) + r'/download/([^/]+)/deploy\.tar(?:\.gz)?', url)
+        if tag and tag[1] in VERSIONS and VERSIONS[tag[1]] is None:
+            marker = '# aos-work deployment release: ' + tag[1]
+            if marker not in (stage / 'deploy.sh').read_text().splitlines():
+                raise ValueError('包内版本与选择的 Release 不符。')
+        # Validate every destination before changing any installed file. Move the entry point last.
+        targets = {n: root / ('.aos-selected.sh' if n == 'deploy.sh' else n) for n in layout}
+        for dest in targets.values():
+            check_path(root, dest)
+            if dest.exists() and not dest.is_file():
+                raise ValueError(f'文件位置被占用：{dest}')
+        for n in sorted(layout, key=lambda n: n == 'deploy.sh'):
+            dest = targets[n]
+            if n in ENV | WORKBENCH and dest.exists():
+                continue
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(stage / n, dest)
+        if layout == LEGACY:
+            # Keep configured credentials and local service choices across layout changes.
+            p = root / '.env.middleware'
+            check_path(root, p)
+            if p.exists():
+                text = p.read_text()
+                updated = re.sub(r'^(COMPOSE_FILE=[\x27"]?)compose/middleware\.yaml', r'\1docker-compose.middleware.yaml', text, flags=re.M)
+                if updated != text:
+                    new = stage / 'middleware.env'
+                    new.write_text(updated)
+                    new.chmod(0o600)
+                    os.replace(new, p)
+
+
+def offline(folder, name):
+    print(f'请访问 {RELEASES} 手动下载同一版本。\n上传到：{folder / name}\n'
+          f'可将同一 Release 的 SHA256SUMS 一起上传到 {folder}。上传完成后再次运行 sudo bash deploy.sh。')
+
+
+def run(root, resume):
+    state = root / '.aos-install'
+    check_path(root, state)
+    state.mkdir(mode=0o700, exist_ok=True)
+    lock = state / 'lock'
+    check_path(root, lock)
+    with lock.open('a') as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        pending = state / 'pending.json'
+        check_path(root, pending)
+        if resume:
+            url = json.loads(pending.read_text())['url']
+        else:
+            url = choose()
+            if url is None:
+                return False
+        name = check_url(url)
+        # Isolate different versions, including different mirrors with the same asset name.
+        folder = state / hashlib.sha256(url.encode()).hexdigest()[:12]
+        check_path(root, folder)
+        folder.mkdir(mode=0o700, exist_ok=True)
+        if not resume:
+            with tempfile.NamedTemporaryFile(mode='w', dir=state, delete=False) as f:
+                json.dump({'url': url}, f)
+            os.replace(f.name, pending)
+        archive = folder / name
+        check_path(root, archive)
+        if not archive.is_file():
+            if resume:
+                offline(folder, name)
+                return False
+            print('正在下载：' + url, flush=True)
+            try:
+                with tempfile.NamedTemporaryFile(dir=folder, delete=False) as f:
+                    partial = Path(f.name)
+                try:
+                    subprocess.run(['curl', '--fail', '--location', '--proto', '=https', '--proto-redir', '=https',
+                                    '--connect-timeout', '10', '--max-time', '120', '--max-filesize', str(MAX_BYTES),
+                                    '-o', str(partial), '--', url], check=True)
+                    os.replace(partial, archive)
+                finally:
+                    partial.unlink(missing_ok=True)
+            except (OSError, subprocess.CalledProcessError):
+                offline(folder, name)
+                return False
+        try:
+            install(root, folder, url)
+        except (OSError, ValueError, EOFError, tarfile.TarError, subprocess.CalledProcessError) as error:
+            print(f'安装包未通过检查：{error}')
+            offline(folder, name)
+            return False
+        print('已解压所选部署包，开始配置并安装 Studio + Workbench。', flush=True)
+        pending.unlink()
+        return True
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('action', choices=('choose', 'resume'))
+    try:
+        ready = run(Path(os.environ['BASIL_DEPLOY_DIR']).resolve(), parser.parse_args().action == 'resume')
+    except (ValueError, KeyError, OSError, EOFError) as error:
+        parser.exit(1, f'安装包处理失败：{error}\n')
+    # 2 means cancelled or waiting for upload.
+    raise SystemExit(0 if ready else 2)
+AOS_EMBEDDED_FILE_END
+cat > "$SUPPORT_DIR/reset-deployment.py" <<'AOS_EMBEDDED_FILE_END'
+"""Inventory and remove resources owned by one deployment, after operator confirmation."""
+import importlib.util
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+
+support = Path(__file__).resolve().parent
+spec = importlib.util.spec_from_file_location('ops', support / 'deploy-support.py')
+ops = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(ops)
+PROJECT = 'com.docker.compose.project'
+OWNER = 'ai.basilos.deploy.directory'
+GROUPS = ('workbench', 'studio', 'middleware')
+
+
+def docker(*args):
+    return subprocess.check_output(['docker', *args], text=True).strip()
+
+
+def objects(kind, ids):
+    return json.loads(docker(kind, 'inspect', *ids)) if ids else []
+
+
+def local_docker():
+    endpoint = os.environ.get('DOCKER_HOST', '')
+    if os.environ.get('DOCKER_CONTEXT') or not endpoint:
+        endpoint = docker('context', 'inspect', '--format', '{{.Endpoints.docker.Host}}')
+    if not endpoint.startswith('unix://'):
+        raise ValueError('清理需要当前服务器的本地 Docker Unix Socket。')
+
+
+def local_path(value):
+    # Docker Desktop exposes Mac bind sources with a /host_mnt prefix.
+    if sys.platform == 'darwin' and value.startswith('/host_mnt/'):
+        value = value.removeprefix('/host_mnt')
+    return Path(value)
+
+
+def paths_to_reset(root, env):
+    if len(root.parts) < 3 or root == Path.home() or not (root / 'docker-compose.workbench.yaml').is_file():
+        raise ValueError('当前目录不是可识别的独立部署目录。')
+    files = [root / n for n in ('data/postgresql', 'data/redis', 'data/rabbitmq', 'data/minio',
+                                 'data/studio-logs', 'workbench/frontend-logs', '.domains.json', '.aos-install/pending.json')]
+    minio = Path(env['middleware'].get('MINIO_DATA_HOST_PATH', './data/minio'))
+    custom = (root / minio).resolve()
+    if custom.is_relative_to(root / 'data') and custom != root / 'data':
+        files.append(custom)
+    storage = root / 'workbench/storage'
+    if storage.resolve() != storage:
+        raise ValueError('Workbench 存储路径包含符号链接，请先核对。')
+    if storage.is_dir():
+        for child in storage.iterdir():
+            if child.name not in ('templates', 'nginx'):
+                files.append(child)
+            elif child.is_symlink():
+                raise ValueError(f'请先核对符号链接：{child}')
+            elif child.is_dir():
+                keep = 'AGENTS.md' if child.name == 'templates' else 'runtime-nginx.conf'
+                files.extend(p for p in child.iterdir() if p.name != keep)
+    for g in GROUPS:
+        files.append(root / ('.env.' + g))
+        files.extend(root.glob('.env.' + g + '.bak*'))
+    paths = sorted({p for p in files if p.exists() or p.is_symlink()})
+    mounts = set()
+    if Path('/proc/self/mountinfo').is_file():
+        for row in Path('/proc/self/mountinfo').read_text().splitlines():
+            mounts.add(Path(re.sub(r'\\([0-7]{3})', lambda m: chr(int(m[1], 8)), row.split()[4])))
+    for p in paths:
+        if p.resolve() != p or p.is_mount() or any(m == p or p in m.parents for m in mounts):
+            raise ValueError(f'清理范围包含链接或挂载点，请先核对并卸载：{p}')
+    return [p for p in paths if not any(parent in paths for parent in p.parents)]
+
+
+def inventory(root):
+    env = {}
+    for group in GROUPS:
+        path = root / ('.env.' + group)
+        env[group] = ops.read_env(path) if path.is_file() else {}
+    projects = {values.get('COMPOSE_PROJECT_NAME', 'basil-' + group) for group, values in env.items()}
+    images = set()
+    for cfg in env.values():
+        for k, v in cfg.items():
+            tag = cfg.get(k[:-6] + '_VERSION') if k.endswith('_IMAGE') else None
+            if tag and v:
+                images.add(v + ':' + tag)
+    sandbox = env['workbench'].get('RUNTIME_SANDBOX_IMAGE')
+    paths = paths_to_reset(root, env)
+    own, others = [], []
+    for c in objects('container', docker('ps', '-aq', '--no-trunc').splitlines()):
+        labels = c['Config'].get('Labels') or {}
+        wd = local_path(labels.get(PROJECT + '.working_dir', ''))
+        inputs = [local_path(f) for f in labels.get(PROJECT + '.config_files', '').split(',')]
+        composed = labels.get(PROJECT) in projects and (wd == root or wd == root / 'compose') and any(
+            f in {root / 'docker-compose.studio.yaml', root / 'docker-compose.workbench.yaml',
+                  root / 'compose/middleware.yaml', root / 'docker-compose.middleware.yaml'} for f in inputs)
+        mounts = [local_path(m['Source']) for m in c['Mounts'] if m['Type'] == 'bind']
+        dynamic = (not labels.get(PROJECT) and sandbox and c['Config']['Image'].startswith(sandbox + ':')
+                   and any(root / 'workbench/storage/sandbox/workspaces' in p.parents for p in mounts))
+        if composed or dynamic:
+            own.append(c)
+        else:
+            others.append(c)
+            for p in paths:
+                if any(src == p or p in src.parents or src in p.parents for src in mounts):
+                    raise ValueError(f'其他容器 {c["Name"]} 也挂载了 {p}，请先处理共享数据。')
+    used_images = {c['Image'] for c in others}
+    held_vols = {m['Name'] for c in others for m in c['Mounts'] if m['Type'] == 'volume'}
+    volumes = {m['Name'] for c in own for m in c['Mounts'] if m['Type'] == 'volume'}
+    containers = sorted((c['Id'], c['Name'].lstrip('/')) for c in own)
+    nets = {n['NetworkID'] for c in own for n in c['NetworkSettings']['Networks'].values() if n.get('NetworkID')}
+    nets.update(docker('network', 'ls', '--no-trunc', '-q', '--filter', 'label='+OWNER+'='+str(root)).splitlines())
+    networks = []
+    ids = {c['Id'] for c in own}
+    kept = []
+    for net in objects('network', sorted(nets)):
+        label = net.get('Labels') or {}
+        if (label.get(OWNER) == str(root) or label.get(PROJECT) in projects) and not set(net.get('Containers') or {}) - ids:
+            networks.append((net['Id'], net['Name']))
+        else:
+            kept.append('共享或外部网络 ' + net['Name'])
+    private_volumes = []
+    for volume in objects('volume', sorted(volumes)):
+        name = volume['Name']
+        if name not in held_vols and ((volume.get('Labels') or {}).get(PROJECT) in projects or re.fullmatch('[0-9a-f]{64}', name)):
+            private_volumes.append(name)
+        else:
+            kept.append('共享或外部卷 ' + name)
+    images.update(c['Config']['Image'] for c in own)
+    used_by_own = {c['Image'] for c in own}
+    remove_images = []
+    tags_by_id = {}
+    for line in docker('image', 'ls', '-a', '--no-trunc', '--format', '{{.ID}} {{.Repository}}:{{.Tag}}').splitlines():
+        image_id, tag = line.split(' ', 1)
+        tags = tags_by_id.setdefault(image_id, set())
+        if not tag.endswith(':<none>'):
+            tags.add(tag)
+    for image_id, tags in tags_by_id.items():
+        refs = (tags & images)
+        if not tags and image_id in used_by_own:
+            refs.add(image_id)
+        if image_id in used_images:
+            kept.extend('其他容器使用镜像 ' + ref for ref in refs)
+        else:
+            remove_images.extend((ref, image_id) for ref in refs)
+    custom = (root / env['middleware'].get('MINIO_DATA_HOST_PATH', './data/minio')).resolve()
+    if not custom.is_relative_to(root / 'data'):
+        kept.append('自定义对象存储路径 ' + str(custom))
+    proxies = []
+    state = root / '.domains.json'
+    if state.is_file():
+        spec = importlib.util.spec_from_file_location('domain', support / 'domain-ssl.py')
+        domain = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(domain)
+        for target, settings in json.loads(state.read_text()).items():
+            if target not in domain.TARGETS:
+                continue
+            site = domain.NGINX_DIR / ('basil-' + target + '.conf')
+            if site.is_file():
+                expected = domain.nginx_text(settings['domain'], settings['port'], True)
+                if not site.is_symlink() and site.read_text() == expected:
+                    proxies.append(site)
+                else:
+                    kept.append('已另行修改的 Nginx 配置 ' + str(site))
+    return dict(containers=containers, proxies=sorted(proxies), networks=sorted(networks), volumes=sorted(private_volumes),
+                images=sorted(remove_images), paths=paths, kept=sorted(kept))
+
+
+def reset(root):
+    local_docker()
+    plan = inventory(root)
+    print(f'完全清理当前部署 {root}。本地数据库、上传文件及密钥将永久删除。')
+    for title, entries in [('容器', [v for _, v in plan['containers']]), ('镜像', [v for v, _ in plan['images']]),
+                           ('卷', plan['volumes']), ('网络', [v for _, v in plan['networks']]),
+                           ('部署创建的 Nginx 站点', plan['proxies']), ('本地配置和数据', plan['paths']), ('保留', plan['kept'])]:
+        print(title + '：' + ('、'.join(map(str, entries)) or '无'))
+    print('保留安装脚本、部署模板、已下载安装包、外部服务及宿主机证书。')
+    if input(f'输入 DELETE {root} 确认，其他输入取消：') != f'DELETE {root}':
+        print('已取消。')
+        return
+    if inventory(root) != plan:
+        raise ValueError('部署资源发生变化，请重新预览。')
+    if plan['proxies']:
+        saved = {p: p.read_bytes() for p in plan['proxies']}
+        try:
+            for site in saved:
+                site.unlink()
+            subprocess.run(['nginx', '-t'], check=True)
+            subprocess.run(['systemctl', 'reload', 'nginx'], check=True)
+        except (OSError, subprocess.CalledProcessError):
+            for site, data in saved.items():
+                site.write_bytes(data)
+            raise
+    for cid, name in plan['containers']:
+        print('停止 ' + name, flush=True)
+        docker('stop', cid)
+    for cid, _ in plan['containers']:
+        docker('rm', cid)
+    for vol in plan['volumes']:
+        docker('volume', 'rm', vol)
+    for nid, _ in plan['networks']:
+        docker('network', 'rm', nid)
+    for ref, image_id in plan['images']:
+        if docker('image', 'inspect', '--format', '{{.Id}}', ref) != image_id:
+            raise ValueError(f'镜像标签已变化，请重新预览：{ref}')
+        docker('image', 'rm', ref)
+    # Recheck consumers before unlinking data; a concurrently created sandbox must be stopped first.
+    remaining = inventory(root)
+    if remaining['containers'] or remaining['paths'] != plan['paths']:
+        raise ValueError('数据或容器状态已变化，请重新预览后继续清理。')
+    for path in plan['paths']:
+        if path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+    print('当前部署已清理。重新选择菜单 1 可从头配置并安装。')
+
+
+if __name__ == '__main__':
+    try:
+        reset(Path(os.environ['BASIL_DEPLOY_DIR']).resolve())
+    except (OSError, ValueError, EOFError, subprocess.CalledProcessError) as error:
+        sys.exit(f'清理未完成：{error}')
+AOS_EMBEDDED_FILE_END
 cat > "$SUPPORT_DIR/deploy-support.py" <<'AOS_EMBEDDED_FILE_END'
 #!/usr/bin/env python3
 """Deployment operations. No third-party Python dependencies; never source .env as code."""
@@ -2200,7 +2655,7 @@ ensure_shared_network() {
   network_name="$(dotenv_get BASIL_NETWORK_NAME)"
   [[ -n "$network_name" ]] || die "BASIL_NETWORK_NAME 不能为空。"
   if ! docker network inspect "$network_name" >/dev/null 2>&1; then
-    docker network create "$network_name" >/dev/null
+    docker network create --label "ai.basilos.deploy.directory=$DEPLOY_DIR" "$network_name" >/dev/null
     info "已创建共享网络：$network_name"
   fi
 }
@@ -2671,6 +3126,40 @@ diagnose_environment() {
   ops pull "$(workbench_get_env RUNTIME_SANDBOX_IMAGE):$(workbench_get_env RUNTIME_SANDBOX_VERSION)"
 }
 
+perform_action() {
+  case "$1" in
+    1) install_selected deploy_all ;;
+    2) install_selected deploy_studio ;;
+    3) install_selected deploy_workbench ;;
+    4) maintenance_selected service_update_menu ;;
+    5) prepare_health_check; show_container_health ;;
+    6) prepare_health_check; service_stop_menu ;;
+    7) maintenance_selected service_restart_menu ;;
+    8) maintenance_selected bash "${SUPPORT_DIR:-$DEPLOY_DIR}/setup-domain-ssl.sh" ;;
+    9) diagnose_environment ;;
+  esac
+}
+
+installed_action() {
+  if [[ -f "$DEPLOY_DIR/.aos-selected.sh" ]]; then
+    # Start a fresh Bash so historical scripts use their own functions and helper paths.
+    bash -c "$(declare -f perform_action)"$'\nsource "$1"\nperform_action "$2"' bash "$DEPLOY_DIR/.aos-selected.sh" "$1"
+  else
+    perform_action "$1"
+  fi
+}
+
+package_install() {
+  require_command python3
+  local status=0
+  python3 "$SUPPORT_DIR/release-install.py" "$1" || status=$?
+  case "$status" in
+    0) installed_action 1 ;;
+    2) return 0 ;;
+    *) return "$status" ;;
+  esac
+}
+
 deployment_menu() {
   local choice=""
 
@@ -2685,20 +3174,16 @@ deployment_menu() {
     printf '  7) 重启服务（加载最新环境变量）\n'
     printf '  8) 配置域名与 HTTPS\n'
     printf '  9) 环境、部署文件与镜像检查\n'
+    printf '  10) 选择版本、下载并安装部署包\n'
+    printf '  11) 完全删除当前部署（容器、镜像及本地数据）\n'
     printf '  0) 退出\n'
-    read -r -p '请选择 [0-9]: ' choice
+    read -r -p '请选择 [0-11]: ' choice || return 0
     case "$choice" in
-      1) run_menu_action install_selected deploy_all ;;
-      2) run_menu_action install_selected deploy_studio ;;
-      3) run_menu_action install_selected deploy_workbench ;;
-      4) run_menu_action maintenance_selected service_update_menu ;;
-      5) prepare_health_check; show_container_health ;;
-      6) prepare_health_check; service_stop_menu ;;
-      7) run_menu_action maintenance_selected service_restart_menu ;;
-      8) run_menu_action maintenance_selected bash "$SUPPORT_DIR/setup-domain-ssl.sh" ;;
-      9) run_menu_action diagnose_environment ;;
+      [1-9]) run_menu_action installed_action "$choice" ;;
+      10) run_menu_action package_install choose ;;
+      11) run_menu_action python3 "$SUPPORT_DIR/reset-deployment.py" ;;
       0) return ;;
-      *) warn "请输入 0 到 9 之间的数字。" ;;
+      *) warn "请输入 0 到 11 之间的数字。" ;;
     esac
   done
 }
@@ -2911,6 +3396,8 @@ self_test() {
       calls+="prepare "
     }
     run_menu_action() { "$@"; }
+    installed_action() { perform_action "$1"; }
+    package_install() { :; }
     service_update_menu() {
       calls+="update"
     }
@@ -2943,6 +3430,10 @@ self_test() {
 }
 
 main() {
+  if [[ -f "$DEPLOY_DIR/.aos-selected.sh" && "${1-}" =~ ^--(health|check|update)$ && "${BASH_SOURCE[0]##*/}" != .aos-selected.sh ]]; then
+    bash "$DEPLOY_DIR/.aos-selected.sh" "$@"
+    return
+  fi
   case "${1-}" in
     --self-test)
       self_test
@@ -2968,6 +3459,9 @@ main() {
     *) die "用法：./deploy.sh [--self-test|--update|--health|--check]" ;;
   esac
 
+  if [[ -f "$DEPLOY_DIR/.aos-install/pending.json" ]]; then
+    run_menu_action package_install resume
+  fi
   deployment_menu
 }
 
