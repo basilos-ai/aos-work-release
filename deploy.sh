@@ -4,17 +4,1105 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 
 DEPLOY_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+export BASIL_DEPLOY_DIR="$DEPLOY_DIR"
+SUPPORT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/aos-work.XXXXXXXX")"
+trap 'rm -rf -- "$SUPPORT_DIR"' EXIT
+cat > "$SUPPORT_DIR/deploy-support.py" <<'AOS_EMBEDDED_FILE_END'
+#!/usr/bin/env python3
+"""Deployment operations. No third-party Python dependencies; never source .env as code."""
+import argparse
+import datetime
+import json
+import importlib.util
+import os
+from pathlib import Path
+import re
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+from urllib.parse import urlsplit, urlunsplit
+
+SUPPORT = Path(__file__).resolve().parent
+ROOT = Path(os.environ.get("BASIL_DEPLOY_DIR", SUPPORT))
+PORTS = {
+    'middleware': {'postgresql': [('POSTGRES_HOST_PORT', 5432)], 'redis': [('REDIS_HOST_PORT', 6379)],
+                   'rabbitmq': [('RABBITMQ_HOST_PORT', 5672), ('RABBITMQ_MANAGEMENT_HOST_PORT', 15672)],
+                   'minio': [('MINIO_API_HOST_PORT', 9000), ('MINIO_CONSOLE_HOST_PORT', 9001)]},
+    'studio': {'studio': [('STUDIO_API_HOST_PORT', 12001)], 'studio-frontend': [('STUDIO_FRONTEND_HOST_PORT', 80)],
+               'node-sandbox': [('NODE_SANDBOX_HOST_PORT', 3000)]},
+    'workbench': {'workbench': [('WORKBENCH_HOST_PORT', None)], 'workbench-frontend': [('WORKBENCH_FRONTEND_HOST_PORT', 80)],
+                  'workbench-runtime': [('RUNTIME_GATEWAY_HOST_PORT', 3100)]},
+}
+
+
+def run(args, **kw):
+    return subprocess.run(args, cwd=ROOT, check=True, **kw)
+
+
+def capture(args):
+    # Compose output can contain secrets. Keep both streams out of the terminal on failure.
+    try:
+        return run(args, capture_output=True, text=True).stdout
+    except subprocess.CalledProcessError:
+        raise ValueError('命令检查失败：' + ' '.join(args[:3]) + '；请检查配置、Docker 权限或服务状态。') from None
+
+
+def ask(label, default=''):
+    value = input(f'{label}' + (f' [{default}]' if default else '') + ': ').strip() or default
+    if not value:
+        raise ValueError('输入为空，操作已取消。')
+    return value
+
+
+def env_path(group):
+    return ROOT / ('.env.' + group)
+
+
+def read_env(path):
+    result = {}
+    for n, line in enumerate(path.read_text().splitlines(), 1):
+        if not line.strip() or line.lstrip().startswith('#'):
+            continue
+        match = re.fullmatch(r'([A-Za-z_][A-Za-z_0-9]*)=(.*)', line)
+        if not match or match[1] in result:
+            raise ValueError(f'{path.name}:{n} 格式错误或变量重复（不输出变量值）。')
+        value = match[2]
+        if value.startswith(('"', "'")):
+            if len(value) < 2 or value[-1] != value[0]:
+                raise ValueError(f'{path.name}:{n} 引号未闭合。')
+            value = value[1:-1]
+        result[match[1]] = value
+    return result
+
+
+def atomic_write(path, text):
+    if path.is_symlink():
+        raise ValueError(f'拒绝写入符号链接：{path}')
+    fd, temp = tempfile.mkstemp(dir=path.parent, prefix=path.name + '.tmp.')
+    with os.fdopen(fd, 'w') as f:
+        f.write(text)
+    os.replace(temp, path)
+
+
+def backup(path):
+    target = path.with_name(path.name + '.bak.' + datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ'))
+    shutil.copy2(path, target)
+    target.chmod(0o600)
+    return target
+
+
+def edit_env(path, changes):
+    values = read_env(path)
+    if all(values.get(k) == v for k, v in changes.items()):
+        return
+    backup(path)
+    lines, seen = [], set()
+    for line in path.read_text().splitlines():
+        key = line.partition('=')[0]
+        if key in changes:
+            line = key + '=' + encode(changes[key])
+            seen.add(key)
+        lines.append(line)
+    lines += [k + '=' + encode(v) for k, v in changes.items() if k not in seen]
+    atomic_write(path, '\n'.join(lines) + '\n')
+
+
+def encode(value):
+    if any(c in value for c in "'\n\r"):
+        raise ValueError('环境变量不能包含单引号或换行。')
+    return value if re.fullmatch(r'[A-Za-z0-9_./,:@+-]*', value) else "'" + value + "'"
+
+
+def compose(group):
+    args = ['docker', 'compose', '--project-directory', str(ROOT), '--env-file', str(env_path('middleware'))]
+    if group != 'middleware':
+        args += ['--env-file', str(env_path(group)), '-f', str(ROOT / f'docker-compose.{group}.yaml')]
+    else:
+        files = read_env(env_path(group)).get('COMPOSE_FILE', 'compose/middleware.yaml').split(',')
+        for file in files:
+            if file == 'docker-compose.middleware.yaml':  # previously shipped layout
+                file = 'compose/middleware.yaml'
+            if file not in ['compose/middleware.yaml', 'compose/db.yaml', 'compose/cache.yaml', 'compose/mq.yaml', 'compose/storage.yaml']:
+                raise ValueError('COMPOSE_FILE 包含不支持的文件：' + file)
+            args += ['-f', str(ROOT / file)]
+    return args
+
+
+def config(group):
+    for name in ('middleware', group):
+        read_env(env_path(name))
+    return json.loads(capture(compose(group) + ['config', '--format', 'json']))
+
+
+def check_files():
+    files = ['deploy.sh', 'docker-compose.studio.yaml', 'docker-compose.workbench.yaml',
+             'workbench/storage/templates/AGENTS.md', 'workbench/storage/nginx/runtime-nginx.conf']
+    files += [f'compose/{name}.yaml' for name in ('middleware', 'db', 'cache', 'mq', 'storage')]
+    for name in files:
+        p = ROOT / name
+        if not p.is_file() or p.is_symlink():
+            raise ValueError('部署包缺少普通文件：' + name)
+    for group in PORTS:
+        p, template = env_path(group), SUPPORT / f'.env.{group}.example'
+        if p.is_symlink() or (p.exists() and not p.is_file()):
+            raise ValueError('环境文件必须是普通文件：' + p.name)
+        expected = read_env(template)
+        if not p.exists():
+            shutil.copyfile(template, p)
+            p.chmod(0o600)
+            print('已创建 ' + p.name)
+        p.chmod(0o600)
+        actual = read_env(p)
+        missing = set(expected) - set(actual)
+        if missing:
+            print(p.name + ' 缺少变量，将从模板补齐：' + ', '.join(sorted(missing)))
+            edit_env(p, {k: expected[k] for k in sorted(missing)})
+        unresolved = [k for k, v in read_env(p).items() if 'CHANGE_ME' in v]
+        if unresolved:
+            print(p.name + ' 待配置：' + ', '.join(unresolved))
+    print('部署文件结构和环境文件格式检查通过。')
+
+
+def image_exists(image):
+    return subprocess.run(['docker', 'image', 'inspect', image], stdout=subprocess.DEVNULL,
+                          stderr=subprocess.DEVNULL).returncode == 0
+
+
+def pull_image(image, force=False):
+    if not force and image_exists(image):
+        print('使用本地镜像：' + image, flush=True)
+        return
+    while True:
+        print('拉取镜像（单次最多 180 秒）：' + image, flush=True)
+        try:
+            result = subprocess.run(['docker', 'pull', image], timeout=180)
+            if result.returncode == 0:
+                return
+        except subprocess.TimeoutExpired:
+            print('镜像下载超时。')
+        print('1) 重试  2) 导入离线 docker save 归档后继续  3) 从可信镜像仓库拉取并映射为原标签  0) 返回')
+        choice = ask('请选择', '0')
+        if choice == '0':
+            raise ValueError('镜像未就绪，停止启动服务。已有配置与容器保留。')
+        if choice == '2':
+            archive = Path(ask('镜像归档绝对路径')).expanduser()
+            if not archive.is_file():
+                print('归档不存在。'); continue
+            run(['docker', 'load', '-i', str(archive)])
+            if image_exists(image):
+                return
+            print('归档没有所需标签：' + image)
+        elif choice == '3':
+            alternate = ask('输入你确认可信的完整镜像名:tag（或 @sha256）')
+            if alternate.startswith('-') or any(c.isspace() for c in alternate):
+                raise ValueError('镜像名称无效。')
+            try:
+                run(['docker', 'pull', alternate], timeout=180)
+                run(['docker', 'tag', alternate, image])
+                return
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                print('备用镜像拉取失败。')
+
+
+def port_available(port):
+    # Wildcard mappings must not overlap a listener on any local IPv4/IPv6 address.
+    for family, host in [(socket.AF_INET, '0.0.0.0'), (socket.AF_INET6, '::')]:
+        try:
+            with socket.socket(family, socket.SOCK_STREAM) as s:
+                if family == socket.AF_INET6:
+                    s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+                s.bind((host, port))
+        except OSError as e:
+            if e.errno in (47, 97, 99, 49):  # IPv6 unavailable
+                continue
+            return False
+    return True
+
+
+def port_owners():
+    ids = capture(['docker', 'ps', '-q']).split()
+    owners = {}
+    if ids:
+        for c in json.loads(capture(['docker', 'inspect'] + ids)):
+            labels = c['Config'].get('Labels') or {}
+            owner = (labels.get('com.docker.compose.project'), labels.get('com.docker.compose.service'))
+            for bindings in (c['NetworkSettings'].get('Ports') or {}).values():
+                for binding in bindings or []:
+                    owners.setdefault(int(binding['HostPort']), set()).add(owner)
+    return owners
+
+
+def replace_http_port(value, old, new):
+    p = urlsplit(value)
+    if p.scheme == 'http' and p.port == old:
+        host = p.hostname
+        if ':' in host:
+            host = '[' + host + ']'
+        return urlunsplit((p.scheme, f'{host}:{new}', p.path, p.query, p.fragment))
+    return value
+
+
+def sync_port_urls(group, key, old, new):
+    url_keys = {
+        'STUDIO_FRONTEND_HOST_PORT': {'studio': ['ASSETS_SEARCH_SNAPSHOT_URL', 'VIEW_SNAPSHOT_URL']},
+        'WORKBENCH_FRONTEND_HOST_PORT': {'workbench': ['APP_URL', 'FRONTEND_URL', 'FRONTEND_OAUTH_RESULT_URL']},
+        'WORKBENCH_HOST_PORT': {'workbench': ['APP_URL']},
+        'MINIO_API_HOST_PORT': {'middleware': ['MINIO_EXPOSE_URL'], 'workbench': ['MINIO_PUBLIC_BASE_URL']},
+    }
+    for target, keys in url_keys.get(key, {}).items():
+        vals = read_env(env_path(target))
+        changes = {k: replace_http_port(vals[k], old, new) for k in keys if vals.get(k)}
+        if key == 'MINIO_API_HOST_PORT' and target == 'workbench' and vals.get('MINIO_PRESIGN_USE_SSL') == 'false' and vals.get('MINIO_PRESIGN_PORT') == str(old):
+            changes['MINIO_PRESIGN_PORT'] = str(new)
+        edit_env(env_path(target), changes)
+    # Keep managed reverse proxies consistent; custom Nginx files are never edited.
+    spec = importlib.util.spec_from_file_location('basil_domain', SUPPORT / 'domain-ssl.py')
+    domain = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(domain)
+    domain.refresh_port(ROOT, group, key, new)
+
+
+def ensure_ports(group, selected, cfg):
+    owners, reserved, changed = port_owners(), {}, False
+    for service in selected:
+        spec = cfg['services'][service]
+        for mapping in spec.get('ports', []):
+            old = int(mapping['published'])
+            key = next((k for k, target in PORTS.get(group, {}).get(service, []) if target is None or target == int(mapping['target'])), None)
+            current = old
+            while True:
+                owner = (cfg['name'], service)
+                active = owners.get(current, set())
+                free = active == {owner} or (not active and port_available(current))
+                if current not in reserved and free:
+                    break
+                if key is None:
+                    raise ValueError(f'{service} 端口 {current} 冲突，未找到对应 HOST_PORT 变量。')
+                print(f'{service} 的宿主机端口 {current} 被占用。')
+                val = ask('请输入新端口（1-65535），输入 0 取消')
+                if val == '0':
+                    raise ValueError('已取消端口调整。')
+                if not val.isdecimal() or not 1 <= int(val) <= 65535:
+                    print('端口无效。'); continue
+                current = int(val)
+            reserved[current] = service
+            if current != old:
+                snapshots = {env_path(g): env_path(g).read_text() for g in PORTS if env_path(g).exists()}
+                try:
+                    edit_env(env_path(group), {key: str(current)})
+                    sync_port_urls(group, key, old, current)
+                except BaseException:
+                    for path, text in snapshots.items():
+                        atomic_write(path, text)
+                    raise
+                print(f'已保存 {key}={current}，准备自动重试启动。')
+                changed = True
+    return changed
+
+
+def select_services(cfg, requested, no_deps=False):
+    selected = list(requested or cfg['services'])
+    for name in selected:
+        if name not in cfg['services']:
+            raise ValueError('当前部署未配置服务：' + name)
+        if not no_deps:
+            for dep in cfg['services'][name].get('depends_on', {}):
+                if dep not in selected:
+                    selected.append(dep)
+    return selected
+
+
+def up(group, services=(), recreate=False, no_deps=False):
+    before = {g: env_path(g).read_text() for g in PORTS if env_path(g).exists()}
+    cfg = config(group)
+    selected = select_services(cfg, services, no_deps)
+    for service in selected:
+        if 'CHANGE_ME' in json.dumps(cfg['services'][service]):
+            raise ValueError(f'{service} 仍有未配置占位符，请先选择安装菜单完成配置。')
+    for image in dict.fromkeys(cfg['services'][s]['image'] for s in selected):
+        pull_image(image)
+    while True:
+        cfg = config(group)
+        ensure_ports(group, selected, cfg)
+        args = compose(group) + ['up', '-d', '--pull', 'never', '--wait', '--wait-timeout', '300']
+        if recreate:
+            args.append('--force-recreate')
+        if no_deps:
+            args.append('--no-deps')
+        result = subprocess.run(args + list(services), capture_output=True, text=True, cwd=ROOT)
+        # Compose startup logs do not include the full environment; show failures for diagnosis.
+        print(result.stdout, end=''); print(result.stderr, end='', file=sys.stderr)
+        if result.returncode == 0:
+            # A changed direct MinIO URL must also reach already-running application containers.
+            if group == 'middleware' and env_path(group).read_text() != before[group]:
+                for dependent in ('studio', 'workbench'):
+                    if capture(compose(dependent) + ['ps', '-q', dependent]).strip():
+                        up(dependent, [dependent], recreate=True, no_deps=True)
+            return
+        if not re.search(r'port is already allocated|address already in use|ports are not available|failed to bind', result.stderr + result.stdout, re.I):
+            raise ValueError('服务未就绪，请用菜单 5 查看健康度及 Compose logs 查看日志；不会重复索要密码。')
+        if not ensure_ports(group, selected, config(group)):
+            raise ValueError('启动报告端口冲突但无法定位占用，请检查 Docker 和宿主机监听状态。')
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest='action', required=True)
+    sub.add_parser('check-files')
+    check = sub.add_parser('check-images'); check.add_argument('group', choices=PORTS)
+    pull = sub.add_parser('pull'); pull.add_argument('image'); pull.add_argument('--force', action='store_true')
+    start = sub.add_parser('up'); start.add_argument('group', choices=PORTS); start.add_argument('services', nargs='*')
+    start.add_argument('--recreate', action='store_true'); start.add_argument('--no-deps', action='store_true')
+    args = parser.parse_args()
+    if args.action == 'check-files':
+        check_files()
+    elif args.action == 'pull':
+        pull_image(args.image, args.force)
+    elif args.action == 'check-images':
+        for image in dict.fromkeys(s['image'] for s in config(args.group)['services'].values()):
+            pull_image(image)
+    else:
+        up(args.group, args.services, args.recreate, args.no_deps)
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (ValueError, EOFError, KeyboardInterrupt, OSError, subprocess.SubprocessError) as error:
+        print('[失败] ' + str(error), file=sys.stderr)
+        sys.exit(1)
+AOS_EMBEDDED_FILE_END
+cat > "$SUPPORT_DIR/domain-ssl.py" <<'AOS_EMBEDDED_FILE_END'
+#!/usr/bin/env python3
+"""Interactive DNS verification, Nginx and ACME setup (Ubuntu/Debian)."""
+import importlib.util
+import ipaddress
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import socket
+import subprocess
+import sys
+import uuid
+
+SUPPORT = Path(__file__).resolve().parent
+ROOT = Path(os.environ.get("BASIL_DEPLOY_DIR", SUPPORT))
+NGINX_DIR = Path('/etc/nginx/conf.d')
+ACME_DIR = Path('/var/www/basil-acme')
+spec = importlib.util.spec_from_file_location('basil_ops', SUPPORT / 'deploy-support.py')
+ops = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(ops)
+TARGETS = {
+    'studio': ('studio', 'STUDIO_FRONTEND_HOST_PORT'),
+    'workbench': ('workbench', 'WORKBENCH_FRONTEND_HOST_PORT'),
+    'storage': ('middleware', 'MINIO_API_HOST_PORT'),
+}
+
+
+def valid_domain(value):
+    try:
+        ipaddress.ip_address(value)
+        return False
+    except ValueError:
+        return len(value) <= 253 and '.' in value and all(re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', x) for x in value.split('.')) and not value.endswith(('.local', '.localhost', '.test', '.invalid'))
+
+
+def nginx_text(domain, port, tls):
+    challenge = '''    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/basil-acme;
+        try_files $uri =404;
+    }
+'''
+    proxy = f'''    client_max_body_size 500M;
+    location / {{
+        proxy_pass http://127.0.0.1:{port};
+        proxy_http_version 1.1;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $basil_{domain.replace('.', '_').replace('-', '_')}_upgrade;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+        proxy_buffering off;
+        proxy_request_buffering off;
+        proxy_redirect off;
+    }}
+'''
+    text = f'''# Managed by Basil deploy.sh
+map $http_upgrade $basil_{domain.replace('.', '_').replace('-', '_')}_upgrade {{
+    default upgrade;
+    '' close;
+}}
+server {{
+    listen 80;
+    listen [::]:80;
+    server_name {domain};
+{challenge}'''
+    if not tls:
+        return text + proxy + '}\n'
+    return text + f'''    location / {{ return 301 https://$host$request_uri; }}
+}}
+server {{
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name {domain};
+    ssl_certificate /etc/letsencrypt/live/{domain}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/{domain}/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+{proxy}}}
+'''
+
+
+def reload_nginx():
+    ops.run(['nginx', '-t'])
+    ops.run(['systemctl', 'enable', '--now', 'nginx'])
+    ops.run(['systemctl', 'reload', 'nginx'])
+
+
+def refresh_port(root, group, key, port):
+    state = root / '.domains.json'
+    if not state.exists():
+        return
+    settings = json.loads(state.read_text())
+    for target, item in settings.items():
+        if TARGETS.get(target) != (group, key):
+            continue
+        conf = NGINX_DIR / ('basil-' + target + '.conf')
+        old = conf.read_text()
+        if os.geteuid() != 0:
+            raise ValueError('已有域名代理，修改上游端口请使用 sudo bash deploy.sh。')
+        ops.backup(conf)
+        ops.atomic_write(conf, nginx_text(item['domain'], port, True))
+        conf.chmod(0o644)
+        try:
+            reload_nginx()
+        except subprocess.SubprocessError:
+            ops.atomic_write(conf, old); reload_nginx(); raise
+        item['port'] = port
+    ops.atomic_write(state, json.dumps(settings, indent=2) + '\n')
+
+
+def setup(target, domain, email, port, expected):
+    if not valid_domain(domain):
+        raise ValueError('请填写完整公网域名，例如 workbench.example.com，不含协议、路径或端口。')
+    if not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', email):
+        raise ValueError('证书通知邮箱格式无效。')
+    if not 1 <= port <= 65535 or port in (80, 443):
+        raise ValueError('应用上游请使用 80/443 以外的端口，80/443 留给宿主机 Nginx。在环境文件修改应用 HOST_PORT 后用菜单 7 重启。')
+    expected = {str(ipaddress.ip_address(x.strip())) for x in expected.split(',')}
+    addresses = {x[4][0] for x in socket.getaddrinfo(domain, 80, type=socket.SOCK_STREAM)}
+    if not addresses or not addresses.issubset(expected):
+        raise ValueError('DNS 尚未正确指向本机：' + ', '.join(sorted(addresses)) + '。检查 A/AAAA；暂时关闭 CDN 代理后重试。')
+    health_path = '/minio/health/ready' if target == 'storage' else '/'
+    ops.run(['curl', '--noproxy', '*', '-fsS', '--max-time', '10', '-o', '/dev/null', f'http://127.0.0.1:{port}{health_path}'])
+    if not shutil.which('nginx') or not shutil.which('certbot'):
+        if not shutil.which('apt-get'):
+            raise ValueError('此系统请先安装 nginx、certbot 和 systemd，再运行菜单。')
+        ops.run(['apt-get', 'update'])
+        ops.run(['apt-get', 'install', '-y', 'nginx', 'certbot'])
+    # Existing non-nginx listeners must be handled before changing any site configuration.
+    for number in (80, 443):
+        listeners = ops.capture(['ss', '-H', '-ltnp', f'sport = :{number}']).strip()
+        if listeners and any('nginx' not in line for line in listeners.splitlines()):
+            raise ValueError(f'端口 {number} 已被其他服务占用，请通过重启菜单调整容器 HOST_PORT 后重试。')
+    conf = NGINX_DIR / ('basil-' + target + '.conf')
+    conf.parent.mkdir(parents=True, exist_ok=True)
+    if conf.exists() and not conf.read_text().startswith('# Managed by Basil deploy.sh'):
+        raise ValueError('目标配置不是脚本管理的文件，拒绝覆盖：' + str(conf))
+    nginx_all = subprocess.run(['nginx', '-T'], capture_output=True, text=True)
+    current_file = ''
+    for line in nginx_all.stdout.splitlines():
+        if line.startswith('# configuration file '):
+            current_file = line.removeprefix('# configuration file ').rstrip(':')
+        if re.search(r'\bserver_name\s', line) and domain in line.replace(';', '').split() and current_file != str(conf):
+            raise ValueError('该域名已在另一份 Nginx 配置中使用：' + current_file)
+    previous = conf.read_text() if conf.exists() else None
+    if conf.exists():
+        ops.backup(conf)
+    token = uuid.uuid4().hex
+    challenge = ACME_DIR / '.well-known/acme-challenge' / token
+    challenge.parent.mkdir(parents=True, exist_ok=True)
+    challenge.write_text(token); challenge.chmod(0o644)
+    try:
+        ops.atomic_write(conf, nginx_text(domain, port, False)); conf.chmod(0o644)
+        reload_nginx()
+        for address in addresses:
+            ip = '[' + address + ']' if ':' in address else address
+            body = ops.capture(['curl', '--noproxy', '*', '-fsS', '--max-time', '15', '--resolve', f'{domain}:80:{ip}', f'http://{domain}/.well-known/acme-challenge/{token}'])
+            if body != token:
+                raise ValueError('HTTP 验证路径未返回测试文件，请检查安全组 80 入站和 DNS。')
+        ops.run(['certbot', 'certonly', '--webroot', '-w', '/var/www/basil-acme', '-d', domain,
+                 '--cert-name', domain, '--email', email, '--agree-tos', '--non-interactive', '--keep-until-expiring'])
+        ops.atomic_write(conf, nginx_text(domain, port, True)); conf.chmod(0o644)
+        reload_nginx()
+        ops.run(['curl', '--noproxy', '*', '-fsS', '--max-time', '20', '-o', '/dev/null', f'https://{domain}{health_path}'])
+    except BaseException:
+        if previous is None:
+            conf.unlink(missing_ok=True)
+        else:
+            ops.atomic_write(conf, previous); conf.chmod(0o644)
+        reload_nginx()
+        raise
+    finally:
+        challenge.unlink(missing_ok=True)
+    hook = Path('/etc/letsencrypt/renewal-hooks/deploy/basil-nginx.sh')
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    hook.write_text('#!/bin/sh\nset -eu\nnginx -t\nsystemctl reload nginx\n'); hook.chmod(0o755)
+    ops.run(['systemctl', 'enable', '--now', 'certbot.timer'])
+    state = ROOT / '.domains.json'
+    settings = json.loads(state.read_text()) if state.exists() else {}
+    settings[target] = {'domain': domain, 'port': port}
+    ops.atomic_write(state, json.dumps(settings, indent=2) + '\n')
+
+
+def apply_urls(target, domain):
+    url = 'https://' + domain
+    if target == 'workbench':
+        ops.edit_env(ops.env_path('workbench'), {k: url for k in ('APP_URL', 'FRONTEND_URL', 'FRONTEND_OAUTH_RESULT_URL')})
+        ops.up('workbench', ['workbench'], recreate=True, no_deps=True)
+    elif target == 'studio':
+        ops.edit_env(ops.env_path('studio'), {'ASSETS_SEARCH_SNAPSHOT_URL': url + '/basilos/asset/search-embed',
+                    'VIEW_SNAPSHOT_URL': url + '/basilos/studio/engine/multi-dim-table-embed'})
+        ops.up('studio', ['studio'], recreate=True, no_deps=True)
+    else:
+        ops.edit_env(ops.env_path('middleware'), {'MINIO_EXPOSE_URL': url})
+        ops.edit_env(ops.env_path('workbench'), {'MINIO_PUBLIC_BASE_URL': url, 'MINIO_PRESIGN_ENDPOINT': domain,
+                    'MINIO_PRESIGN_PORT': '443', 'MINIO_PRESIGN_USE_SSL': 'true'})
+        for group, service in [('studio', 'studio'), ('workbench', 'workbench')]:
+            if ops.capture(ops.compose(group) + ['ps', '-a', '-q', service]).strip():
+                ops.up(group, [service], recreate=True, no_deps=True)
+    for group, frontend in [('studio', 'studio-frontend'), ('workbench', 'workbench-frontend')]:
+        if ops.capture(ops.compose(group) + ['ps', '-q', frontend]).strip():
+            ops.run(ops.compose(group) + ['exec', '-T', frontend, 'nginx', '-s', 'reload'])
+
+
+def release_web_ports():
+    owners = ops.port_owners()
+    for group in ops.PORTS:
+        cfg = ops.config(group)
+        for service, mappings in ops.PORTS[group].items():
+            for key, _ in mappings:
+                value = ops.read_env(ops.env_path(group)).get(key)
+                if value not in ('80', '443') or (cfg['name'], service) not in owners.get(int(value), set()):
+                    continue
+                print(f'{service} 正占用 {value}，需要移到其他端口，供 Nginx 使用 80/443。')
+                while True:
+                    proposed = ops.ask('请输入新的应用端口（0 取消）', '12000' if service == 'studio-frontend' else '')
+                    if proposed == '0':
+                        raise ValueError('已取消域名配置。')
+                    if proposed.isdecimal() and 1 <= int(proposed) <= 65535 and int(proposed) not in (80, 443) and not owners.get(int(proposed)) and ops.port_available(int(proposed)):
+                        break
+                    print('端口不可用，请重新输入。')
+                ops.edit_env(ops.env_path(group), {key: proposed})
+                ops.sync_port_urls(group, key, int(value), int(proposed))
+                ops.up(group, [service], recreate=True, no_deps=True)
+
+
+def main():
+    if os.geteuid() != 0:
+        raise ValueError('域名配置需要宿主机管理权限，请使用 sudo bash deploy.sh 后选择菜单 8。')
+    print('配置域名与 HTTPS：1) Studio  2) Workbench  3) MinIO 文件服务  0) 返回')
+    target = {'1': 'studio', '2': 'workbench', '3': 'storage'}.get(ops.ask('选择', '0'))
+    if not target:
+        return
+    release_web_ports()
+    group, key = TARGETS[target]
+    port = int(ops.read_env(ops.env_path(group))[key])
+    domain = ops.ask('完整公网域名（例如 workbench.example.com）').lower()
+    expected = ops.ask('服务器公网 IP（有 IPv6 时逗号分隔全部 A/AAAA 地址）')
+    email = ops.ask('证书通知邮箱')
+    print(f'请在域名的 DNS 服务商添加 A/AAAA：{domain} → {expected}。\n暂时关闭 CDN 代理；安全组放行 TCP 80/443。此脚本负责检查 DNS，不会修改 DNS 账户。')
+    ops.ask('完成后输入任意字符开始检查，Ctrl-C 返回')
+    setup(target, domain, email, port, expected)
+    apply_urls(target, domain)
+    print('域名、证书和应用环境变量已更新：https://' + domain)
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (ValueError, OSError, EOFError, KeyboardInterrupt, subprocess.SubprocessError) as error:
+        print('[失败] ' + str(error), file=sys.stderr)
+        sys.exit(1)
+AOS_EMBEDDED_FILE_END
+cat > "$SUPPORT_DIR/install-docker.sh" <<'AOS_EMBEDDED_FILE_END'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+[[ $(id -u) -eq 0 ]] || { echo '请使用 sudo bash deploy.sh，再选择环境检查。' >&2; exit 1; }
+[[ -f /etc/os-release ]] || { echo '请手动安装 Docker Engine 与 Compose 插件。'; exit 1; }
+. /etc/os-release
+[[ "$ID" == ubuntu || "$ID" == debian ]] || { echo '自动安装支持 Ubuntu/Debian；其他系统请先安装 Docker 与 Compose 插件。'; exit 1; }
+apt-get update
+apt-get install -y ca-certificates curl python3 iproute2 gnupg
+if command -v docker >/dev/null && docker compose version >/dev/null 2>&1; then
+  exit
+fi
+if command -v docker >/dev/null && ! docker compose version >/dev/null 2>&1; then
+  if apt-cache show docker-compose-plugin >/dev/null 2>&1; then
+    apt-get install -y docker-compose-plugin
+    exit
+  fi
+  # Preserve existing distribution packages instead of replacing a live engine.
+  if dpkg-query -W -f='${Status}' docker.io 2>/dev/null | grep -q 'install ok installed'; then
+    apt-get install -y docker-compose-v2
+    exit
+  fi
+fi
+install -m 0755 -d /etc/apt/keyrings
+key_file="$(mktemp)"
+trap 'rm -f "$key_file"' EXIT
+repo="https://download.docker.com/linux/$ID"
+if ! curl -fSL --retry 2 --connect-timeout 10 --max-time 40 "$repo/gpg" -o "$key_file"; then
+  repo="https://mirrors.aliyun.com/docker-ce/linux/$ID"
+  echo 'Docker 官方下载连接失败，尝试阿里云 Docker CE 软件包镜像。'
+  curl -fSL --retry 2 --connect-timeout 10 --max-time 40 "$repo/gpg" -o "$key_file"
+fi
+# Pin Docker's signing key, including when obtained from the mirror.
+gpg --show-keys --with-colons "$key_file" | grep -q '9DC858229FC7DD38854AE2D88D81803C0EBFCD88' || { echo 'Docker 签名密钥指纹不匹配。'; exit 1; }
+install -m 0644 "$key_file" /etc/apt/keyrings/basil-docker.asc
+printf 'deb [arch=%s signed-by=/etc/apt/keyrings/basil-docker.asc] %s %s stable\n' "$(dpkg --print-architecture)" "$repo" "${UBUNTU_CODENAME:-$VERSION_CODENAME}" > /etc/apt/sources.list.d/basil-docker.list
+apt-get update
+if command -v docker >/dev/null; then
+  apt-get install -y docker-compose-plugin
+else
+  apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+fi
+systemctl enable --now docker
+docker compose version
+docker info >/dev/null
+AOS_EMBEDDED_FILE_END
+cat > "$SUPPORT_DIR/setup-domain-ssl.sh" <<'AOS_EMBEDDED_FILE_END'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+DEPLOY_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+exec python3 "$DEPLOY_DIR/domain-ssl.py" "$@"
+AOS_EMBEDDED_FILE_END
+cat > "$SUPPORT_DIR/check-workbench.sh" <<'AOS_EMBEDDED_FILE_END'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+ENV_FILE="${ENV_FILE:-${ROOT_DIR}/.env.workbench}"
+UPDATED_COUNT=0
+
+fail() {
+  printf '[FAIL] %s\n' "$*" >&2
+  exit 1
+}
+
+pass() {
+  printf '[PASS] %s\n' "$*"
+}
+
+info() {
+  printf '[INFO] %s\n' "$*"
+}
+
+read_env() {
+  local key="$1"
+  awk -F= -v key="${key}" '
+    $1 == key {
+      value = substr($0, index($0, "=") + 1)
+      sub(/\r$/, "", value)
+      print value
+      exit
+    }
+  ' "${ENV_FILE}"
+}
+
+write_env() {
+  local key="$1"
+  local value="$2"
+  local current_value temp_file
+
+  current_value="$(read_env "${key}")"
+  if [[ "${current_value}" == "${value}" ]]; then
+    pass "${key}=${value}"
+    return
+  fi
+
+  temp_file="$(mktemp "${ENV_FILE}.tmp.XXXXXX")"
+  if ! awk -F= -v key="${key}" -v value="${value}" '
+    BEGIN { written = 0 }
+    $1 == key {
+      if (!written) {
+        print key "=" value
+        written = 1
+      }
+      next
+    }
+    { print }
+    END {
+      if (!written) print key "=" value
+    }
+  ' "${ENV_FILE}" >"${temp_file}"; then
+    rm -f "${temp_file}"
+    fail "无法更新 ${ENV_FILE} 中的 ${key}"
+  fi
+
+  chmod 600 "${temp_file}"
+  mv "${temp_file}" "${ENV_FILE}"
+  UPDATED_COUNT=$((UPDATED_COUNT + 1))
+  info "已修正 ${key}: ${current_value:-<未配置>} -> ${value}"
+}
+
+append_candidate() {
+  local candidate="$1"
+  local existing
+  [[ -n "${candidate}" ]] || return
+  for existing in "${SOCKET_CANDIDATES[@]:-}"; do
+    [[ "${existing}" == "${candidate}" ]] && return
+  done
+  SOCKET_CANDIDATES+=("${candidate}")
+}
+
+socket_responds() {
+  local socket_path="$1"
+  [[ -S "${socket_path}" ]] || return 1
+  docker --host "unix://${socket_path}" version --format '{{.Server.Version}}' >/dev/null 2>&1
+}
+
+resolve_docker_socket() {
+  local configured_socket context_host candidate
+  configured_socket="$(read_env RUNTIME_DOCKER_SOCKET_PATH)"
+  append_candidate "${configured_socket}"
+
+  if [[ "${DOCKER_HOST:-}" == unix://* ]]; then
+    append_candidate "${DOCKER_HOST#unix://}"
+  fi
+
+  context_host="$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null || true)"
+  if [[ "${context_host}" == unix://* ]]; then
+    append_candidate "${context_host#unix://}"
+  fi
+
+  append_candidate '/var/run/docker.sock'
+  append_candidate "/run/user/$(id -u)/docker.sock"
+  if [[ -n "${HOME:-}" ]]; then
+    append_candidate "${HOME}/.docker/run/docker.sock"
+  fi
+
+  for candidate in "${SOCKET_CANDIDATES[@]}"; do
+    if socket_responds "${candidate}"; then
+      printf '%s' "${candidate}"
+      return
+    fi
+  done
+
+  return 1
+}
+
+read_socket_gid() {
+  local socket_path="$1"
+  local gid
+  # Docker Desktop 将挂载到 Linux 容器内的 Engine Socket 表现为 root:root；
+  # macOS 宿主机 Socket 文件自身的组 ID 不能直接用于容器 group_add。
+  if [[ "$(uname -s)" == 'Darwin' ]]; then
+    printf '0'
+    return
+  fi
+  if gid="$(stat -c '%g' "${socket_path}" 2>/dev/null)"; then
+    printf '%s' "${gid}"
+    return
+  fi
+  if gid="$(stat -f '%g' "${socket_path}" 2>/dev/null)"; then
+    printf '%s' "${gid}"
+    return
+  fi
+  return 1
+}
+
+main() {
+  local docker_socket docker_gid
+  SOCKET_CANDIDATES=()
+
+  [[ -e "${ENV_FILE}" ]] || fail "未找到 ${ENV_FILE}；请先从 .env.workbench.example 创建该文件"
+  [[ -f "${ENV_FILE}" ]] || fail "${ENV_FILE} 不是普通文件"
+  [[ ! -L "${ENV_FILE}" ]] || fail "拒绝修改符号链接环境文件：${ENV_FILE}"
+  command -v docker >/dev/null 2>&1 || fail '缺少 docker 命令'
+  command -v stat >/dev/null 2>&1 || fail '缺少 stat 命令'
+
+  docker_socket="$(resolve_docker_socket)" || \
+    fail '未找到当前用户可访问且 Docker Engine 能响应的 Unix Socket'
+  docker_gid="$(read_socket_gid "${docker_socket}")" || \
+    fail "无法读取 Docker Socket GID：${docker_socket}"
+  [[ "${docker_gid}" =~ ^[0-9]+$ ]] || fail "Docker Socket GID 非法：${docker_gid}"
+
+  # 当前发布镜像合同：Workbench 以 root 管理目录，Sandbox 以 1000:10001 运行。
+  write_env USER_STORAGE_OWNER_UID 0
+  write_env USER_STORAGE_GID 10001
+  write_env SANDBOX_WORKSPACE_OWNER_UID 0
+  write_env SANDBOX_WORKSPACE_UID 1000
+  write_env SANDBOX_WORKSPACE_GID 10001
+  write_env RUNTIME_DOCKER_SOCKET_PATH "${docker_socket}"
+  write_env RUNTIME_DOCKER_GID "${docker_gid}"
+
+  if ((UPDATED_COUNT > 0)); then
+    pass "已更新 ${ENV_FILE}，共修正 ${UPDATED_COUNT} 项"
+  else
+    pass "${ENV_FILE} 中的 UID/GID 与 Docker Socket 配置均正确"
+  fi
+  info '脚本未检查或修改镜像、密钥、域名、容器状态、HTTP 服务和业务功能'
+}
+
+main "$@"
+AOS_EMBEDDED_FILE_END
+cat > "$SUPPORT_DIR/.env.middleware.example" <<'AOS_EMBEDDED_FILE_END'
+# Compose
+COMPOSE_PROJECT_NAME=basil-middleware
+COMPOSE_PATH_SEPARATOR=,
+COMPOSE_FILE=compose/middleware.yaml
+BASIL_NETWORK_NAME=basilos
+TZ=Asia/Shanghai
+
+# 中间件镜像
+POSTGRES_IMAGE=registry.cn-hangzhou.aliyuncs.com/tyrion-image/pgvector
+POSTGRES_VERSION=pg16
+REDIS_IMAGE=registry.cn-hangzhou.aliyuncs.com/tyrion-image/redis
+REDIS_VERSION=7.2.4
+RABBITMQ_IMAGE=registry.cn-hangzhou.aliyuncs.com/tyrion-image/rabbitmq
+RABBITMQ_VERSION=3-management
+MINIO_IMAGE=registry.cn-hangzhou.aliyuncs.com/tyrion-image/minio
+MINIO_VERSION=2024.8.3
+
+# 宿主机映射端口
+POSTGRES_HOST_PORT=5432
+REDIS_HOST_PORT=6379
+RABBITMQ_HOST_PORT=5672
+RABBITMQ_MANAGEMENT_HOST_PORT=15672
+MINIO_API_HOST_PORT=9000
+MINIO_CONSOLE_HOST_PORT=9001
+
+# PostgreSQL
+POSTGRESQL_HOST=CHANGE_ME_POSTGRESQL_HOST
+POSTGRESQL_PORT=5432
+POSTGRESQL_USERNAME=basilos
+POSTGRESQL_PASSWORD=CHANGE_ME_POSTGRESQL_PASSWORD
+POSTGRESQL_BOOTSTRAP_DATABASE=basilos
+
+# Redis
+REDIS_HOST=CHANGE_ME_REDIS_HOST
+REDIS_PORT=6379
+REDIS_PASSWORD=CHANGE_ME_REDIS_PASSWORD
+REDIS_SSL=false
+
+# RabbitMQ
+RABBITMQ_HOST=CHANGE_ME_RABBITMQ_HOST
+RABBITMQ_PORT=5672
+RABBITMQ_MANAGEMENT_PORT=15672
+RABBITMQ_USERNAME=basilos
+RABBITMQ_PASSWORD=CHANGE_ME_RABBITMQ_PASSWORD
+RABBITMQ_VIRTUAL_HOST=/basilos
+
+# 对象存储：MinIO
+FILE_SERVICE_SELECTOR=minio
+MINIO_EXPOSE_URL=https://CHANGE_ME_STORAGE_DOMAIN
+MINIO_HOST=CHANGE_ME_MINIO_HOST
+MINIO_PORT=9000
+MINIO_USERNAME=CHANGE_ME_MINIO_USERNAME
+MINIO_PASSWORD=CHANGE_ME_MINIO_PASSWORD
+MINIO_DATA_HOST_PATH=./data/minio
+MINIO_DATA_CONTAINER_PATH=/bitnami/minio/data
+
+# 对象存储：阿里云 OSS
+ALI_OSS_ACCESS_ID=
+ALI_OSS_ACCESS_KEY=
+ALI_OSS_ENDPOINT=
+
+# 对象存储：Azure Blob
+AZURE_BLOB_ACCOUNT_NAME=
+AZURE_BLOB_ACCOUNT_KEY=
+AZURE_BLOB_ENDPOINT=
+AOS_EMBEDDED_FILE_END
+cat > "$SUPPORT_DIR/.env.studio.example" <<'AOS_EMBEDDED_FILE_END'
+# Compose
+COMPOSE_PROJECT_NAME=basil-studio
+COMPOSE_PATH_SEPARATOR=,
+COMPOSE_FILE=docker-compose.studio.yaml
+
+# Studio 镜像：2026-11-16 本地验证组合；正式服务器仍须按部署流程验收。
+STUDIO_IMAGE=ghcr.io/basilos-ai/studio-backend
+STUDIO_VERSION=v1.8.10
+STUDIO_FRONTEND_IMAGE=ghcr.io/basilos-ai/studio-frontend
+STUDIO_FRONTEND_VERSION=v1.8.11
+NODE_SANDBOX_IMAGE=ghcr.io/basilos-ai/studio-node-sandbox
+NODE_SANDBOX_VERSION=v1.0.0
+
+# Studio 宿主机映射端口
+STUDIO_API_HOST_PORT=12001
+STUDIO_FRONTEND_HOST_PORT=12000
+NODE_SANDBOX_HOST_PORT=12002
+
+# Studio 运行配置
+JAVA_OPTS=-Xms1g -Xmx2g
+SPRING_PROFILES_ACTIVE=docker
+ENCRYPTOR_PASSWORD=CHANGE_ME_ENCRYPTOR_PASSWORD
+# 私有化部署固定为 false，deploy.sh 在部署 Studio 时会强制校正。
+ENABLE_HTTPS_COOKIES=false
+FLOW_NODE_CALL_DEPTH=100
+SANDBOX_READ_TIMEOUT_SECOND=600
+
+# Studio 接口返回的前端页面地址
+ASSETS_SEARCH_SNAPSHOT_URL=https://CHANGE_ME_STUDIO_FRONTEND_DOMAIN/basilos/asset/search-embed
+VIEW_SNAPSHOT_URL=https://CHANGE_ME_STUDIO_FRONTEND_DOMAIN/basilos/studio/engine/multi-dim-table-embed
+
+# Studio 数据库
+POSTGRESQL_DATABASE=basilos
+
+# Studio Redis 逻辑库
+REDIS_DATABASE=0
+
+# Studio 对象存储空间
+FILE_SERVICE_PRIVATE_BUCKET_NAME=studio-private
+FILE_SERVICE_PUBLIC_BUCKET_NAME=studio-public
+ALI_OSS_BUCKET_NAME=
+AZURE_BLOB_CONTAINER=
+
+# 向量数据库：默认使用 PostgreSQL
+VECTOR_DATABASE_SELECTOR=postgresql
+WEAVIATE_HOST=http://weaviate
+WEAVIATE_PORT=8080
+WEAVIATE_API_KEY=
+
+# 可选：OAuth2
+PUB_KEY=
+OAUTH2_DISCOVERY_URL=
+OAUTH2_CLIENT_ID=
+OAUTH2_CLIENT_SECRET=
+OAUTH2_REDIRECT_URI=
+OAUTH2_SCOPE=openid,profile,email
+OAUTH2_HOME_URI=
+OAUTH2_AUTHORIZED_URI=
+OAUTH2_TOKEN_URI=
+
+# 可选：SAML
+SAML_SP_ENTITY_ID=
+SAML_IDP_SSO_URL=
+SAML_ACS_URI=
+SAML_HOME_URI=
+SAML_PUBLIC_KEY=
+
+# 可选：内容与数据集成
+TEXT_IN_APP_ID=
+TEXT_IN_SECRET_CODE=
+MINERU_HOST=
+DATA_QUERY_BASE_URL=
+HANDLE_CONTENT_PARSE_CONCURRENCY=2
+HANDLE_PRO_KNOWLEDGE_BASE_PARSE_QUEUE_CONCURRENCY=2
+
+# 可选：企业微信
+WX_CP_CORP_ID=
+WX_CP_AGENT_ID=
+WX_CP_SECRET=
+WX_CP_REDIRECT_URI=
+WX_CP_HOME_BASE_URL=
+AOS_EMBEDDED_FILE_END
+cat > "$SUPPORT_DIR/.env.workbench.example" <<'AOS_EMBEDDED_FILE_END'
+# Compose
+COMPOSE_PROJECT_NAME=basil-workbench
+COMPOSE_PATH_SEPARATOR=
+COMPOSE_FILE=docker-compose.workbench.yaml
+WORKBENCH_DEPLOYMENT_ROOT=/data/basil
+
+# GitHub GHCR 镜像；各组件默认使用 latest 标签，安装/重启优先使用缓存，菜单 4 显式更新
+WORKBENCH_IMAGE=ghcr.io/basilos-ai/workbench-backend
+WORKBENCH_VERSION=latest
+WORKBENCH_FRONTEND_IMAGE=ghcr.io/basilos-ai/workbench-frontend
+WORKBENCH_FRONTEND_VERSION=latest
+RUNTIME_IMAGE=ghcr.io/basilos-ai/workbench-runtime
+RUNTIME_VERSION=latest
+RUNTIME_SANDBOX_IMAGE=ghcr.io/basilos-ai/workbench-runtime-sandbox
+RUNTIME_SANDBOX_VERSION=latest
+RUNTIME_NGINX_IMAGE=nginx
+RUNTIME_NGINX_VERSION=1.29-alpine
+WORKBENCH_FRONTEND_PLATFORM=linux/amd64
+
+SERVER_HOST=http://workbench:3000
+
+# 对外访问和宿主机端口
+APP_URL=CHANGE_ME_WORKBENCH_API_URL
+FRONTEND_URL=CHANGE_ME_WORKBENCH_FRONTEND_URL
+FRONTEND_OAUTH_RESULT_URL=CHANGE_ME_WORKBENCH_FRONTEND_URL
+WORKBENCH_HOST_PORT=11001
+WORKBENCH_FRONTEND_HOST_PORT=11007
+RUNTIME_GATEWAY_HOST_PORT=11002
+
+# Workbench 前端访问 Studio 平台网关
+BASILOS_GATEWAY_HOST=CHANGE_ME_GATEWAY_URL
+# 可选：任务产出保存到 Library 时使用；不使用该能力则留空
+ASSETS_BASE_URL=
+DESKTOP_DOWNLOAD_BASE_URL=https://tyrion-team.oss-cn-shanghai.aliyuncs.com/Workbench
+
+# Workbench 与 Runtime 数据库
+POSTGRESQL_DATABASE=basilos
+RUNTIME_DB_DATABASE=basilos
+DB_SCHEMA=workbench
+RUNTIME_DB_SCHEMA=runtime
+JWT_SECRET=CHANGE_ME_RANDOM_JWT_SECRET
+ENCRYPTION_KEY=CHANGE_ME_RANDOM_ENCRYPTION_KEY
+# 仅用于后台新建/重置用户；内置 admin 的初始密码由镜像迁移脚本决定，首次登录必须修改。
+DEFAULT_USER_PASSWORD=CHANGE_ME_DEFAULT_USER_PASSWORD
+
+# Workbench/Runtime 当前客户端的 URL 输入写法；解析后连接共享的 /basilos VHost。
+RABBITMQ_VIRTUAL_HOST=//basilos
+REDIS_DATABASE=1
+RUNTIME_HTTP_SERVICE_TOKEN=CHANGE_ME_RUNTIME_HTTP_SERVICE_TOKEN
+RUNTIME_TO_WORKBENCH_SERVICE_TOKEN=CHANGE_ME_RUNTIME_TO_WORKBENCH_SERVICE_TOKEN
+WORKBENCH_INTERNAL_BASE_URL=http://workbench:3000
+
+# 对话输出与 URL 附件
+RUNTIME_MODEL_MAX_TOKENS=65536
+INTEGRATION_ATTACHMENT_URL_MODE=public-https
+
+# Storage 初始化与 Runtime Sandbox；部署脚本自动校正以下 UID/GID 与 Docker Socket 配置。
+# workbench-storage-init 使用以下 UID/GID 创建共享目录，只处理顶层权限，不递归改写已有数据。
+AGENT_RUNTIME_ENABLED=true
+RUNTIME_SANDBOX_ENABLED=true
+RUNTIME_SANDBOX_HOST_ID=CHANGE_ME_SANDBOX_HOST_ID
+RUNTIME_SANDBOX_NETWORK=bridge
+RUNTIME_DOCKER_SOCKET_PATH=/var/run/docker.sock
+RUNTIME_DOCKER_GID=CHANGE_ME_DOCKER_SOCKET_GID
+USER_STORAGE_OWNER_UID=0
+USER_STORAGE_GID=10001
+SANDBOX_WORKSPACE_OWNER_UID=0
+SANDBOX_WORKSPACE_UID=1000
+SANDBOX_WORKSPACE_GID=10001
+RUNTIME_SANDBOX_CPU_LIMIT=2
+RUNTIME_SANDBOX_MEMORY_LIMIT_MB=2048
+RUNTIME_SANDBOX_PIDS_LIMIT=256
+
+# Workbench 对象存储空间
+MINIO_BUCKET=bascilclaw
+MINIO_REGION=us-east-1
+STORAGE_PRESIGNED_URL_EXPIRES_SECONDS=3600
+
+# 可选：注册邮件、故障告警和 APM；未启用时保持关闭或留空
+MAIL_TRANSPORT=disabled
+INCIDENT_ALERT_ENABLED=false
+INCIDENT_ALERT_WEBHOOK_URL=
+ARMS_MONITORING_ENABLED=false
+ARMS_APP_NAME=
+ARMS_REGION_ID=
+ARMS_LICENSE_KEY=
+ARMS_WORKSPACE=
+AOS_EMBEDDED_FILE_END
 ENV_FILE="$DEPLOY_DIR/.env.middleware"
-ENV_TEMPLATE="$DEPLOY_DIR/.env.middleware.example"
+ENV_TEMPLATE="$SUPPORT_DIR/.env.middleware.example"
 STUDIO_ENV_FILE="$DEPLOY_DIR/.env.studio"
-STUDIO_ENV_TEMPLATE="$DEPLOY_DIR/.env.studio.example"
-MIDDLEWARE_COMPOSE_FILE="$DEPLOY_DIR/docker-compose.middleware.yaml"
+STUDIO_ENV_TEMPLATE="$SUPPORT_DIR/.env.studio.example"
+MIDDLEWARE_COMPOSE_FILE="$DEPLOY_DIR/compose/middleware.yaml"
 STUDIO_COMPOSE_FILE="$DEPLOY_DIR/docker-compose.studio.yaml"
 WORKBENCH_ENV_FILE="$DEPLOY_DIR/.env.workbench"
-WORKBENCH_ENV_TEMPLATE="$DEPLOY_DIR/.env.workbench.example"
+WORKBENCH_ENV_TEMPLATE="$SUPPORT_DIR/.env.workbench.example"
 WORKBENCH_COMPOSE_FILE="$DEPLOY_DIR/docker-compose.workbench.yaml"
-WORKBENCH_CHECK_SCRIPT="$DEPLOY_DIR/check-workbench.sh"
-COMPOSE_FILES="docker-compose.middleware.yaml"
+WORKBENCH_CHECK_SCRIPT="$SUPPORT_DIR/check-workbench.sh"
+COMPOSE_FILES="compose/middleware.yaml"
 POSTGRES_MODE=external
 REDIS_MODE=external
 RABBITMQ_MODE=external
@@ -324,7 +1412,7 @@ enforce_studio_cookie_mode() {
 }
 
 rebuild_compose_files() {
-  COMPOSE_FILES="docker-compose.middleware.yaml"
+  COMPOSE_FILES="compose/middleware.yaml"
   [[ "$POSTGRES_MODE" == local ]] && COMPOSE_FILES+=",compose/db.yaml"
   [[ "$REDIS_MODE" == local ]] && COMPOSE_FILES+=",compose/cache.yaml"
   [[ "$RABBITMQ_MODE" == local ]] && COMPOSE_FILES+=",compose/mq.yaml"
@@ -332,9 +1420,17 @@ rebuild_compose_files() {
   set_env COMPOSE_FILE "$COMPOSE_FILES"
 }
 
-middleware_compose() {
-  docker compose --env-file "$ENV_FILE" "$@"
-}
+middleware_compose() (
+  cd "$DEPLOY_DIR" || return 1
+  local files
+  files="$(dotenv_get COMPOSE_FILE)"
+  # v2026.11.18 used the repository root for the base file.
+  case "$files" in
+    docker-compose.middleware.yaml|docker-compose.middleware.yaml,*)
+      files="compose/middleware.yaml${files#docker-compose.middleware.yaml}" ;;
+  esac
+  COMPOSE_FILE="$files" docker compose --project-directory "$DEPLOY_DIR" --env-file "$ENV_FILE" "$@"
+)
 
 studio_compose() {
   docker compose --env-file "$ENV_FILE" --env-file "$STUDIO_ENV_FILE" \
@@ -1408,13 +2504,13 @@ show_container_health() {
 # Operations shared by first installation and subsequent maintenance.
 compose_recreate() { ops up "${1%_compose}" "$2" --recreate --no-deps; }
 
-ops() { python3 "$DEPLOY_DIR/deploy-support.py" "$@"; }
+ops() { python3 "$SUPPORT_DIR/deploy-support.py" "$@"; }
 
 environment_check() {
   if ! command -v python3 >/dev/null || ! command -v curl >/dev/null ||
     ! command -v docker >/dev/null || ! docker compose version >/dev/null 2>&1; then
     confirm '缺少 Python 3、curl、Docker 或 Compose，是否安装缺少的组件？' y || return 1
-    bash "$DEPLOY_DIR/install-docker.sh" || return 1
+    bash "$SUPPORT_DIR/install-docker.sh" || return 1
   fi
   docker info >/dev/null 2>&1 || { warn 'Docker 未启动或无访问权限；Linux 可用 sudo bash deploy.sh。'; return 1; }
   docker compose up --help | grep -q -- '--wait' || { warn 'Compose 版本过旧，请升级 Compose 插件。'; return 1; }
@@ -1599,7 +2695,7 @@ deployment_menu() {
       5) prepare_health_check; show_container_health ;;
       6) prepare_health_check; service_stop_menu ;;
       7) run_menu_action maintenance_selected service_restart_menu ;;
-      8) run_menu_action maintenance_selected bash "$DEPLOY_DIR/setup-domain-ssl.sh" ;;
+      8) run_menu_action maintenance_selected bash "$SUPPORT_DIR/setup-domain-ssl.sh" ;;
       9) run_menu_action diagnose_environment ;;
       0) return ;;
       *) warn "请输入 0 到 9 之间的数字。" ;;
@@ -1614,7 +2710,7 @@ prepare() {
   require_command curl
   docker compose version >/dev/null
   docker info >/dev/null 2>&1 || die "Docker 服务不可用或当前用户无权访问。"
-  [[ -f "$MIDDLEWARE_COMPOSE_FILE" ]] || die "缺少 docker-compose.middleware.yaml"
+  [[ -f "$MIDDLEWARE_COMPOSE_FILE" ]] || die "缺少 compose/middleware.yaml"
   [[ -f "$STUDIO_COMPOSE_FILE" ]] || die "缺少 docker-compose.studio.yaml"
   [[ -f "$ENV_TEMPLATE" ]] || die "缺少 .env.middleware.example"
   [[ -f "$STUDIO_ENV_TEMPLATE" ]] || die "缺少 .env.studio.example"
@@ -1643,7 +2739,7 @@ prepare_health_check() {
   require_command docker
   docker compose version >/dev/null
   docker info >/dev/null 2>&1 || die "Docker 服务不可用或当前用户无权访问。"
-  [[ -f "$MIDDLEWARE_COMPOSE_FILE" ]] || die "缺少 docker-compose.middleware.yaml"
+  [[ -f "$MIDDLEWARE_COMPOSE_FILE" ]] || die "缺少 compose/middleware.yaml"
   [[ -f "$STUDIO_COMPOSE_FILE" ]] || die "缺少 docker-compose.studio.yaml"
   [[ -f "$ENV_FILE" ]] || die "缺少 .env.middleware，请先完成部署。"
   [[ -f "$STUDIO_ENV_FILE" ]] || die "缺少 .env.studio，请先完成部署。"
@@ -1661,7 +2757,7 @@ self_test() {
   local expected="pass#\$word\\tail"
 
   test_file="$(mktemp)"
-  printf 'COMPOSE_FILE=docker-compose.middleware.yaml\nTEST_VALUE=old\n' > "$test_file"
+  printf 'COMPOSE_FILE=compose/middleware.yaml\nTEST_VALUE=old\n' > "$test_file"
   ENV_FILE="$test_file"
   set_env TEST_VALUE "$expected"
   [[ "$(dotenv_get TEST_VALUE)" == "$expected" ]]
@@ -1678,7 +2774,7 @@ self_test() {
   STORAGE_MODE=external
   rebuild_compose_files
   [[ "$(dotenv_get COMPOSE_FILE)" == \
-    'docker-compose.middleware.yaml,compose/db.yaml,compose/mq.yaml' ]]
+    'compose/middleware.yaml,compose/db.yaml,compose/mq.yaml' ]]
 
   workbench_test_file="$(mktemp)"
   printf 'TEST_VALUE=old\nTEST_VERSION=CHANGE_ME_VERSION\nAPP_URL=http://deploy.example.com:31001\n' > "$workbench_test_file"
