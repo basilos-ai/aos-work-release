@@ -1,0 +1,388 @@
+services:
+  workbench-storage-init:
+    image: "${WORKBENCH_IMAGE}:${WORKBENCH_VERSION}"
+    user: '0:0'
+    restart: 'no'
+    environment:
+      USER_STORAGE_OWNER_UID: ${USER_STORAGE_OWNER_UID:-0}
+      USER_STORAGE_GID: ${USER_STORAGE_GID:-10001}
+      SANDBOX_WORKSPACE_OWNER_UID: ${SANDBOX_WORKSPACE_OWNER_UID:-0}
+      SANDBOX_WORKSPACE_GID: ${SANDBOX_WORKSPACE_GID:-10001}
+      MINIO_ENDPOINT: ${MINIO_HOST:-minio}
+      MINIO_PORT: ${MINIO_PORT:-9000}
+      MINIO_ACCESS_KEY: ${MINIO_USERNAME}
+      MINIO_SECRET_KEY: ${MINIO_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET:-bascilclaw}
+      MINIO_REGION: ${MINIO_REGION:-us-east-1}
+    entrypoint: ['/bin/sh', '-ec']
+    command:
+      - |
+        for path in \
+          /app/storage/resource-hub \
+          /app/storage/templates \
+          /app/storage/sandbox \
+          /app/storage/sandbox/workspaces \
+          /app/storage/user \
+          /app/frontend-logs; do
+          if [ -L "$$path" ]; then
+            printf '拒绝使用符号链接目录：%s\n' "$$path" >&2
+            exit 1
+          fi
+        done
+
+        mkdir -p \
+          /app/storage/resource-hub \
+          /app/storage/templates \
+          /app/storage/sandbox/workspaces \
+          /app/storage/user \
+          /app/frontend-logs
+
+        template=/app/storage/templates/AGENTS.md
+        if [ -L "$$template" ] || [ ! -f "$$template" ] || [ ! -r "$$template" ] || [ ! -s "$$template" ]; then
+          printf '缺少有效的非空 Agent 指令模板\n' >&2
+          exit 1
+        fi
+        if [ "$$(wc -c < "$$template")" -gt 65536 ]; then
+          printf 'Agent 指令模板不能超过 64 KiB\n' >&2
+          exit 1
+        fi
+        chown "$${USER_STORAGE_OWNER_UID}:$${USER_STORAGE_GID}" "$$template"
+        chmod 0644 "$$template"
+
+        chown "$${USER_STORAGE_OWNER_UID}:$${USER_STORAGE_GID}" /app/storage/user
+        chmod 2770 /app/storage/user
+        chown "$${SANDBOX_WORKSPACE_OWNER_UID}:$${SANDBOX_WORKSPACE_GID}" /app/storage/sandbox/workspaces
+        chmod 2770 /app/storage/sandbox/workspaces
+        chown "$${USER_STORAGE_OWNER_UID}:$${USER_STORAGE_GID}" \
+          /app/storage/resource-hub \
+          /app/storage/templates
+        chmod 0700 \
+          /app/storage/resource-hub \
+          /app/storage/templates
+        chown 0:0 /app/frontend-logs
+        chmod 0750 /app/frontend-logs
+
+        # 当前 API 镜像要求 Bucket 已存在；初始化失败时阻止后续应用启动。
+        node <<'NODE'
+        const { Client } = require('minio');
+        const env = process.env;
+        const client = new Client({
+          endPoint: env.MINIO_ENDPOINT,
+          port: Number(env.MINIO_PORT),
+          useSSL: false,
+          accessKey: env.MINIO_ACCESS_KEY,
+          secretKey: env.MINIO_SECRET_KEY,
+          region: env.MINIO_REGION,
+        });
+        (async () => {
+          if (!await client.bucketExists(env.MINIO_BUCKET)) {
+            await client.makeBucket(env.MINIO_BUCKET, env.MINIO_REGION);
+          }
+          console.log('Workbench 对象存储 Bucket 已就绪');
+        })().catch(error => {
+          console.error('Workbench Bucket 初始化失败:', error.code || error.name);
+          process.exit(1);
+        });
+        NODE
+    volumes:
+      - ./workbench/storage:/app/storage
+      - ./workbench/frontend-logs:/app/frontend-logs
+    networks:
+      - middleware
+
+  workbench-runtime-node:
+    image: "${RUNTIME_IMAGE}:${RUNTIME_VERSION}"
+    restart: unless-stopped
+    depends_on:
+      workbench-storage-init:
+        condition: service_completed_successfully
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      RUNTIME_HOST: 0.0.0.0
+      RUNTIME_PORT: 3100
+      RUNTIME_SERVICE_NAME: ${RUNTIME_SERVICE_NAME:-workbench-runtime}
+      RUNTIME_HTTP_SERVICE_TOKEN: ${RUNTIME_HTTP_SERVICE_TOKEN:-}
+      WORKBENCH_INTERNAL_BASE_URL: ${WORKBENCH_INTERNAL_BASE_URL:-}
+      RUNTIME_TO_WORKBENCH_SERVICE_TOKEN: ${RUNTIME_TO_WORKBENCH_SERVICE_TOKEN:-}
+      RUNTIME_WORKER_CONCURRENCY: ${RUNTIME_WORKER_CONCURRENCY:-4}
+      RUNTIME_DISPATCH_POLL_INTERVAL_MS: ${RUNTIME_DISPATCH_POLL_INTERVAL_MS:-500}
+      RUNTIME_LEASE_DURATION_SECONDS: ${RUNTIME_LEASE_DURATION_SECONDS:-30}
+      RUNTIME_HEARTBEAT_INTERVAL_SECONDS: ${RUNTIME_HEARTBEAT_INTERVAL_SECONDS:-10}
+      RUNTIME_SHUTDOWN_GRACE_SECONDS: ${RUNTIME_SHUTDOWN_GRACE_SECONDS:-30}
+      RUNTIME_TOOL_TIMEOUT_SECONDS: ${RUNTIME_TOOL_TIMEOUT_SECONDS:-600}
+      RUNTIME_TOOL_MAX_CALLS_PER_RUN: ${RUNTIME_TOOL_MAX_CALLS_PER_RUN:-256}
+      RUNTIME_TOOL_MAX_IDENTICAL_CALLS_PER_RUN: ${RUNTIME_TOOL_MAX_IDENTICAL_CALLS_PER_RUN:-8}
+      RUNTIME_TOOL_MAX_PARALLEL_CALLS_PER_RUN: ${RUNTIME_TOOL_MAX_PARALLEL_CALLS_PER_RUN:-4}
+      RUNTIME_MODEL_CREDENTIALS_JSON: ${RUNTIME_MODEL_CREDENTIALS_JSON:-}
+      RUNTIME_SANDBOX_ENABLED: ${RUNTIME_SANDBOX_ENABLED:-false}
+      RUNTIME_SANDBOX_HOST_ID: ${RUNTIME_SANDBOX_HOST_ID:-}
+      RUNTIME_SANDBOX_IMAGE: "${RUNTIME_SANDBOX_IMAGE}:${RUNTIME_SANDBOX_VERSION}"
+      RUNTIME_SANDBOX_NETWORK: ${RUNTIME_SANDBOX_NETWORK:-bridge}
+      RUNTIME_SANDBOX_CONTAINER_USER: ${SANDBOX_WORKSPACE_UID:-1000}:${SANDBOX_WORKSPACE_GID:-10001}
+      RUNTIME_SANDBOX_CPU_LIMIT: ${RUNTIME_SANDBOX_CPU_LIMIT:-}
+      RUNTIME_SANDBOX_MEMORY_LIMIT_MB: ${RUNTIME_SANDBOX_MEMORY_LIMIT_MB:-}
+      RUNTIME_SANDBOX_PIDS_LIMIT: ${RUNTIME_SANDBOX_PIDS_LIMIT:-}
+      RUNTIME_SANDBOX_OUTPUT_LIMIT_BYTES: ${RUNTIME_SANDBOX_OUTPUT_LIMIT_BYTES:-4194304}
+      RUNTIME_SANDBOX_DOCKER_COMMAND_TIMEOUT_SECONDS: ${RUNTIME_SANDBOX_DOCKER_COMMAND_TIMEOUT_SECONDS:-300}
+      RUNTIME_SANDBOX_RUNTIME_WORKSPACE_ROOT: /app/storage/sandbox/workspaces
+      RUNTIME_SANDBOX_HOST_WORKSPACE_ROOT: ${WORKBENCH_DEPLOYMENT_ROOT:?WORKBENCH_DEPLOYMENT_ROOT must be an absolute path}/workbench/storage/sandbox/workspaces
+      RUNTIME_SANDBOX_HOST_USER_ROOT: ${WORKBENCH_DEPLOYMENT_ROOT:?WORKBENCH_DEPLOYMENT_ROOT must be an absolute path}/workbench/storage/user
+      LOG_LEVEL: ${RUNTIME_LOG_LEVEL:-info}
+      LOG_FILE_DIRECTORY: ''
+      LOG_FILE_RETENTION_DAYS: ${APP_LOG_RETENTION_DAYS:-14}
+      DB_HOST: ${POSTGRESQL_HOST:-postgresql}
+      DB_PORT: ${POSTGRESQL_PORT:-5432}
+      DB_USERNAME: ${POSTGRESQL_USERNAME}
+      DB_PASSWORD: ${POSTGRESQL_PASSWORD}
+      DB_DATABASE: ${RUNTIME_DB_DATABASE:-basilos}
+      DB_SCHEMA: ${RUNTIME_DB_SCHEMA:-runtime}
+      DB_POOL_MAX: ${RUNTIME_DB_POOL_MAX:-10}
+      DB_SSL: ${RUNTIME_DB_SSL:-false}
+      DB_SSL_REJECT_UNAUTHORIZED: ${RUNTIME_DB_SSL_REJECT_UNAUTHORIZED:-true}
+      RABBITMQ_HOST: ${RABBITMQ_HOST:-rabbitmq}
+      RABBITMQ_PORT: ${RABBITMQ_PORT:-5672}
+      RABBITMQ_USERNAME: ${RABBITMQ_USERNAME}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
+      RABBITMQ_VIRTUAL_HOST: ${RABBITMQ_VIRTUAL_HOST}
+      RUNTIME_RABBITMQ_PREFETCH: ${RUNTIME_RABBITMQ_PREFETCH:-1}
+      RUNTIME_RABBITMQ_TOPOLOGY_PREFIX: ${RUNTIME_RABBITMQ_TOPOLOGY_PREFIX:-workbench.runtime}
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      REDIS_DATABASE: ${REDIS_DATABASE:-0}
+      REDIS_SSL: ${REDIS_SSL:-false}
+      RUNTIME_REDIS_STREAM_KEY: ${RUNTIME_REDIS_STREAM_KEY:-workbench:runtime:events:v1}
+      RUNTIME_REDIS_CANCEL_CHANNEL: ${RUNTIME_REDIS_CANCEL_CHANNEL:-workbench:runtime:cancel:v1}
+    expose:
+      - '3100'
+    group_add:
+      - '${RUNTIME_DOCKER_GID:-0}'
+      - '${SANDBOX_WORKSPACE_GID:-10001}'
+    volumes:
+      - ./workbench/storage:/app/storage
+      # Runtime 仅通过受约束的附件 Resolver 写入 attachments；Sandbox 仍按独立授权挂载。
+      - ./workbench/storage/user:/app/storage/user:rw
+      - ${RUNTIME_DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock
+    logging:
+      driver: json-file
+      options:
+        max-size: '50m'
+        max-file: '5'
+    stop_grace_period: ${RUNTIME_CONTAINER_STOP_GRACE_PERIOD:-45s}
+    networks:
+      - workbench
+      - middleware
+
+  workbench-runtime:
+    image: "${RUNTIME_NGINX_IMAGE}:${RUNTIME_NGINX_VERSION}"
+    restart: unless-stopped
+    depends_on:
+      workbench-runtime-node:
+        condition: service_healthy
+    ports:
+      - '${RUNTIME_GATEWAY_HOST_PORT:-33100}:3100'
+    volumes:
+      - type: bind
+        source: ./workbench/storage/nginx/runtime-nginx.conf
+        target: /etc/nginx/nginx.conf
+        read_only: true
+        bind:
+          create_host_path: false
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          'wget --quiet --output-document=- http://127.0.0.1:3100/nginx-health >/dev/null 2>&1',
+        ]
+      interval: 10s
+      timeout: 5s
+      start_period: 5s
+      retries: 6
+    stop_grace_period: ${RUNTIME_NGINX_STOP_GRACE_PERIOD:-15s}
+    networks:
+      - workbench
+
+  workbench:
+    image: "${WORKBENCH_IMAGE}:${WORKBENCH_VERSION}"
+    restart: always
+    depends_on:
+      workbench-storage-init:
+        condition: service_completed_successfully
+      workbench-runtime:
+        condition: service_healthy
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      PORT: ${PORT:-3000}
+      TZ: ${TZ:-Asia/Shanghai}
+      APP_LOG_RETENTION_DAYS: ${APP_LOG_RETENTION_DAYS:-14}
+      INTEGRATION_ATTACHMENT_URL_MODE: ${INTEGRATION_ATTACHMENT_URL_MODE:-public-https}
+      INCIDENT_ALERT_ENABLED: ${INCIDENT_ALERT_ENABLED:-false}
+      INCIDENT_ALERT_WEBHOOK_URL: ${INCIDENT_ALERT_WEBHOOK_URL:-}
+      INCIDENT_ALERT_SERVICE_NAME: ${INCIDENT_ALERT_SERVICE_NAME:-workbench}
+
+      DB_HOST: ${POSTGRESQL_HOST:-postgresql}
+      DB_PORT: ${POSTGRESQL_PORT:-5432}
+      DB_USERNAME: ${POSTGRESQL_USERNAME}
+      DB_PASSWORD: ${POSTGRESQL_PASSWORD}
+      DB_DATABASE: ${POSTGRESQL_DATABASE}
+      DB_SCHEMA: ${DB_SCHEMA:-workbench}
+      JWT_SECRET: ${JWT_SECRET:-your_super_secret_jwt_key}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-your_encryption_key_change_in_production}
+      SKILL_HUB_AUTH_KEY: ${SKILL_HUB_AUTH_KEY:-}
+      APP_URL: ${APP_URL:-}
+      FRONTEND_URL: ${FRONTEND_URL:-}
+      FRONTEND_OAUTH_RESULT_URL: ${FRONTEND_OAUTH_RESULT_URL:-}
+      ASSETS_BASE_URL: ${ASSETS_BASE_URL:-}
+      DEFAULT_USER_PASSWORD: ${DEFAULT_USER_PASSWORD:-12345}
+
+      MAIL_TRANSPORT: ${MAIL_TRANSPORT:-disabled}
+      MAIL_FROM_ADDRESS: ${MAIL_FROM_ADDRESS:-}
+      MAIL_FROM_NAME: ${MAIL_FROM_NAME:-Workbench}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-465}
+      SMTP_SECURE: ${SMTP_SECURE:-true}
+      SMTP_REQUIRE_TLS: ${SMTP_REQUIRE_TLS:-true}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_CONNECTION_TIMEOUT_MS: ${SMTP_CONNECTION_TIMEOUT_MS:-10000}
+      SMTP_GREETING_TIMEOUT_MS: ${SMTP_GREETING_TIMEOUT_MS:-10000}
+      SMTP_SOCKET_TIMEOUT_MS: ${SMTP_SOCKET_TIMEOUT_MS:-15000}
+      SMTP_POOL_MAX_CONNECTIONS: ${SMTP_POOL_MAX_CONNECTIONS:-5}
+      SMTP_POOL_MAX_MESSAGES: ${SMTP_POOL_MAX_MESSAGES:-100}
+      SMTP_POOL_RATE_LIMIT_PER_SECOND: ${SMTP_POOL_RATE_LIMIT_PER_SECOND:-20}
+      SMTP_MAX_ATTEMPTS: ${SMTP_MAX_ATTEMPTS:-3}
+      SMTP_RETRY_BASE_DELAY_MS: ${SMTP_RETRY_BASE_DELAY_MS:-500}
+      REGISTRATION_MAIL_QUEUE_ENABLED: ${REGISTRATION_MAIL_QUEUE_ENABLED:-false}
+      REGISTRATION_MAIL_QUEUE_EXCHANGE: ${REGISTRATION_MAIL_QUEUE_EXCHANGE:-workbench.registration.email}
+      REGISTRATION_MAIL_QUEUE_NAME: ${REGISTRATION_MAIL_QUEUE_NAME:-workbench.registration.email.verification.v1}
+      REGISTRATION_MAIL_QUEUE_ROUTING_KEY: ${REGISTRATION_MAIL_QUEUE_ROUTING_KEY:-registration.email.verification.v1}
+      REGISTRATION_MAIL_QUEUE_MESSAGE_TTL_MS: ${REGISTRATION_MAIL_QUEUE_MESSAGE_TTL_MS:-120000}
+      REGISTRATION_MAIL_QUEUE_RETRY_DELAY_MS: ${REGISTRATION_MAIL_QUEUE_RETRY_DELAY_MS:-5000}
+      REGISTRATION_MAIL_QUEUE_MAX_DEPTH: ${REGISTRATION_MAIL_QUEUE_MAX_DEPTH:-5000}
+      REGISTRATION_MAIL_QUEUE_HARD_MAX_LENGTH: ${REGISTRATION_MAIL_QUEUE_HARD_MAX_LENGTH:-5500}
+      REGISTRATION_MAIL_QUEUE_PREFETCH: ${REGISTRATION_MAIL_QUEUE_PREFETCH:-5}
+      REGISTRATION_MAIL_DELIVERY_LEASE_SECONDS: ${REGISTRATION_MAIL_DELIVERY_LEASE_SECONDS:-120}
+      REGISTRATION_CODE_PEPPER: ${REGISTRATION_CODE_PEPPER:-}
+      REGISTRATION_REDIS_KEY_PREFIX: ${REGISTRATION_REDIS_KEY_PREFIX:-basilos:registration}
+
+      AGENT_RUNTIME_ENABLED: ${AGENT_RUNTIME_ENABLED:-false}
+      RUNTIME_SANDBOX_ENABLED: ${RUNTIME_SANDBOX_ENABLED:-false}
+      RABBITMQ_HOST: ${RABBITMQ_HOST:-rabbitmq}
+      RABBITMQ_PORT: ${RABBITMQ_PORT:-5672}
+      RABBITMQ_USERNAME: ${RABBITMQ_USERNAME}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
+      RABBITMQ_VIRTUAL_HOST: ${RABBITMQ_VIRTUAL_HOST}
+      RUNTIME_RABBITMQ_TOPOLOGY_PREFIX: ${RUNTIME_RABBITMQ_TOPOLOGY_PREFIX:-workbench.runtime}
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      REDIS_DATABASE: ${REDIS_DATABASE:-0}
+      REDIS_SSL: ${REDIS_SSL:-false}
+      RUNTIME_REDIS_STREAM_KEY: ${RUNTIME_REDIS_STREAM_KEY:-workbench:runtime:events:v1}
+      RUNTIME_REDIS_CONSUMER_GROUP: ${RUNTIME_REDIS_CONSUMER_GROUP:-workbench-runtime-projector-v1}
+      RUNTIME_HTTP_BASE_URL: http://workbench-runtime:3100
+      RUNTIME_HTTP_SERVICE_TOKEN: ${RUNTIME_HTTP_SERVICE_TOKEN:-}
+      RUNTIME_TO_WORKBENCH_SERVICE_TOKEN: ${RUNTIME_TO_WORKBENCH_SERVICE_TOKEN:-}
+      RUNTIME_MODEL_MAX_TOKENS: ${RUNTIME_MODEL_MAX_TOKENS:-65536}
+      RUNTIME_HISTORY_MESSAGE_LIMIT: ${RUNTIME_HISTORY_MESSAGE_LIMIT:-40}
+      SANDBOX_WORKSPACE_ROOT: /app/storage/sandbox/workspaces
+      SANDBOX_WORKSPACE_OWNER_UID: ${SANDBOX_WORKSPACE_OWNER_UID:-0}
+      SANDBOX_WORKSPACE_UID: ${SANDBOX_WORKSPACE_UID:-1000}
+      SANDBOX_WORKSPACE_GID: ${SANDBOX_WORKSPACE_GID:-10001}
+      WORKSPACE_FILE_UPLOAD_MAX_FILES: ${WORKSPACE_FILE_UPLOAD_MAX_FILES:-1000}
+      WORKSPACE_FILE_UPLOAD_FILE_SIZE_BYTES: ${WORKSPACE_FILE_UPLOAD_FILE_SIZE_BYTES:-104857600}
+      WORKSPACE_FILE_UPLOAD_TOTAL_SIZE_BYTES: ${WORKSPACE_FILE_UPLOAD_TOTAL_SIZE_BYTES:-524288000}
+      USER_AGENT_INSTRUCTIONS_TEMPLATE_PATH: /app/storage/templates/AGENTS.md
+      USER_STORAGE_ROOT: /app/storage/user
+      USER_STORAGE_OWNER_UID: ${USER_STORAGE_OWNER_UID:-0}
+      USER_STORAGE_GID: ${USER_STORAGE_GID:-10001}
+
+      OPENCLAW_CONFIG_PATH: ${OPENCLAW_APP_CONFIG_PATH:-storage/openclaw-state/openclaw.json}
+
+      # ARMS APM 为可选能力；关闭或未配置时，Workbench 不加载探针且不发生上报。
+      ARMS_MONITORING_ENABLED: ${ARMS_MONITORING_ENABLED:-false}
+      # 开启 ARMS 时以下三项必填，分别用于标识应用、上报地域和阿里云授权。
+      ARMS_APP_NAME: ${ARMS_APP_NAME:-}
+      ARMS_REGION_ID: ${ARMS_REGION_ID:-}
+      ARMS_LICENSE_KEY: ${ARMS_LICENSE_KEY:-}
+      # 可选工作空间；留空时由 ARMS 根据账号和地域使用默认工作空间。
+      ARMS_WORKSPACE: ${ARMS_WORKSPACE:-}
+      FILE_SERVICE_SELECTOR: ${FILE_SERVICE_SELECTOR:-minio}
+      MINIO_INTERNAL_ENDPOINT: ${MINIO_HOST:-minio}
+      MINIO_ENDPOINT: ${MINIO_HOST:-minio}
+      MINIO_PORT: ${MINIO_PORT:-9000}
+      MINIO_ACCESS_KEY: ${MINIO_USERNAME}
+      MINIO_SECRET_KEY: ${MINIO_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET:-bascilclaw}
+      MINIO_REGION: ${MINIO_REGION:-us-east-1}
+      MINIO_PUBLIC_BASE_URL: ${MINIO_PUBLIC_BASE_URL:-http://localhost:9000}
+      MINIO_PRESIGN_ENDPOINT: ${MINIO_PRESIGN_ENDPOINT:-localhost}
+      MINIO_PRESIGN_PORT: ${MINIO_PRESIGN_PORT:-9000}
+      MINIO_PRESIGN_USE_SSL: ${MINIO_PRESIGN_USE_SSL:-false}
+      MINIO_PUBLIC_READ: ${MINIO_PUBLIC_READ:-false}
+      STORAGE_PRESIGNED_URL_EXPIRES_SECONDS: ${STORAGE_PRESIGNED_URL_EXPIRES_SECONDS:-3600}
+
+      ALI_OSS_ACCESS_ID: ${ALI_OSS_ACCESS_ID:-}
+      ALI_OSS_ACCESS_KEY: ${ALI_OSS_ACCESS_KEY:-}
+      ALI_OSS_ENDPOINT: ${ALI_OSS_ENDPOINT:-}
+      ALI_OSS_BUCKET_NAME: ${ALI_OSS_BUCKET_NAME:-}
+
+      AZURE_STORAGE_CONNECTION_STRING: ${AZURE_STORAGE_CONNECTION_STRING:-}
+      AZURE_BLOB_CONTAINER: ${AZURE_BLOB_CONTAINER:-bascilclaw}
+      AZURE_BLOB_PUBLIC_BASE_URL: ${AZURE_BLOB_PUBLIC_BASE_URL:-}
+    ports:
+      - '${WORKBENCH_HOST_PORT:-38080}:${PORT:-3000}'
+    # 业务表和迁移记录仍写入 DB_SCHEMA；public 提供 Studio 共库的 pg_trgm/vector 扩展。
+    command:
+      - sh
+      - -ec
+      - 'npm run migrate:up -- --schema "$${DB_SCHEMA}" --schema public && npm run start:prod'
+    volumes:
+      - ./workbench/storage:/app/storage
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:' + (process.env.PORT || '3000') + '/').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: '50m'
+        max-file: '5'
+    networks:
+      - workbench
+      - middleware
+
+  workbench-frontend:
+    image: "${WORKBENCH_FRONTEND_IMAGE}:${WORKBENCH_FRONTEND_VERSION}"
+    platform: ${WORKBENCH_FRONTEND_PLATFORM:-linux/amd64}
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      SERVER_HOST: http://workbench:${PORT:-3000}
+      OBJECT_STORAGE_HOST: http://${MINIO_HOST:-minio}:${MINIO_PORT:-9000}
+      BASILOS_GATEWAY_HOST: ${BASILOS_GATEWAY_HOST:?BASILOS_GATEWAY_HOST is required}
+      DESKTOP_DOWNLOAD_BASE_URL: ${DESKTOP_DOWNLOAD_BASE_URL:-}
+    ports:
+      - '${WORKBENCH_FRONTEND_HOST_PORT:-31002}:80'
+    volumes:
+      - ./workbench/frontend-logs:/var/log/nginx
+    depends_on:
+      workbench:
+        condition: service_healthy
+    networks:
+      - workbench
+      - middleware
+
+networks:
+  workbench: {}
+  middleware:
+    external: true
+    name: ${BASIL_NETWORK_NAME:-basilos}

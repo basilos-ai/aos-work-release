@@ -1,0 +1,6 @@
+services: {}
+
+networks:
+  middleware:
+    external: true
+    name: ${BASIL_NETWORK_NAME:-basilos}

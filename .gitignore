@@ -1,0 +1,32 @@
+# Credentials and local environment
+.env
+.env.*
+!.env.*.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Runtime data, logs and backups
+data/
+backups/
+workbench/frontend-logs/
+workbench/storage/*
+!workbench/storage/templates/
+!workbench/storage/nginx/
+workbench/storage/templates/*
+!workbench/storage/templates/AGENTS.md
+workbench/storage/nginx/*
+!workbench/storage/nginx/runtime-nginx.conf
+*.bak*
+*.log
+*.tmp
+
+# Generated archives and local caches
+deploy.tar
+deploy.tar.gz
+SHA256SUMS
+dist/
+__pycache__/
+*.py[cod]
+.DS_Store

@@ -1,0 +1,22 @@
+services:
+  rabbitmq:
+    image: "${RABBITMQ_IMAGE}:${RABBITMQ_VERSION}"
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ}
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USERNAME}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+      RABBITMQ_DEFAULT_VHOST: ${RABBITMQ_VIRTUAL_HOST}
+    ports:
+      - "${RABBITMQ_HOST_PORT}:5672"
+      - "${RABBITMQ_MANAGEMENT_HOST_PORT}:15672"
+    volumes:
+      - ./data/rabbitmq:/var/lib/rabbitmq/mnesia
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 20s
+    networks:
+      - middleware

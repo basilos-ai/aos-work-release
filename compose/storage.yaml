@@ -1,0 +1,33 @@
+services:
+  minio:
+    image: "${MINIO_IMAGE}:${MINIO_VERSION}"
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ}
+      MINIO_ROOT_USER: ${MINIO_USERNAME}
+      MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD}
+    command:
+      - /opt/bitnami/minio/bin/minio
+      - server
+      - --address
+      - :9000
+      - --console-address
+      - :9001
+      - ${MINIO_DATA_CONTAINER_PATH}
+    ports:
+      - "${MINIO_API_HOST_PORT}:9000"
+      - "${MINIO_CONSOLE_HOST_PORT}:9001"
+    volumes:
+      - "${MINIO_DATA_HOST_PATH}:${MINIO_DATA_CONTAINER_PATH}"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl --fail --silent http://127.0.0.1:9000/minio/health/ready >/dev/null",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
+    networks:
+      - middleware

@@ -1,0 +1,47 @@
+services:
+  postgresql:
+    image: "${POSTGRES_IMAGE}:${POSTGRES_VERSION}"
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ}
+      POSTGRES_DB: ${POSTGRESQL_BOOTSTRAP_DATABASE}
+      POSTGRES_USER: ${POSTGRESQL_USERNAME}
+      POSTGRES_PASSWORD: ${POSTGRESQL_PASSWORD}
+    ports:
+      - "${POSTGRES_HOST_PORT}:5432"
+    volumes:
+      - ./data/postgresql:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\"",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    networks:
+      - middleware
+
+  postgresql-init:
+    image: "${POSTGRES_IMAGE}:${POSTGRES_VERSION}"
+    restart: "no"
+    depends_on:
+      postgresql:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: ${POSTGRESQL_PASSWORD}
+      POSTGRESQL_USERNAME: ${POSTGRESQL_USERNAME}
+      POSTGRESQL_BOOTSTRAP_DATABASE: ${POSTGRESQL_BOOTSTRAP_DATABASE}
+    entrypoint: /bin/bash
+    command:
+      - -ec
+      - |
+        psql --host postgresql \
+          --username "$${POSTGRESQL_USERNAME}" \
+          --dbname "$${POSTGRESQL_BOOTSTRAP_DATABASE}" \
+          --set ON_ERROR_STOP=1 \
+          --command 'CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public; CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public;'
+    networks:
+      - middleware
