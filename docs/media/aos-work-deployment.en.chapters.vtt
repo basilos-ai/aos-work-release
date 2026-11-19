@@ -1,0 +1,37 @@
+WEBVTT
+
+00:00:00.000 --> 00:00:03.500
+Introduction
+
+00:00:03.500 --> 00:00:12.300
+1  Prepare the server
+
+00:00:12.300 --> 00:00:19.900
+2  Download the installer
+
+00:00:19.900 --> 00:00:27.900
+3  Run the installer
+
+00:00:27.900 --> 00:01:00.500
+3.1  Check the host
+
+00:01:00.500 --> 00:01:50.133
+3.2  Configure domains and HTTPS
+
+00:01:50.133 --> 00:02:12.600
+3.2  Download the server package
+
+00:02:12.600 --> 00:03:14.033
+3.3  Deploy middleware
+
+00:03:14.033 --> 00:03:54.433
+3.4  Deploy the applications
+
+00:03:54.433 --> 00:04:22.333
+3.5  Update a service
+
+00:04:22.333 --> 00:04:40.333
+3.6  Restart a service
+
+00:04:40.333 --> 00:05:03.667
+3.8  Check service health

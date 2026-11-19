@@ -1,0 +1,17 @@
+:root { color-scheme: light dark; font: 17px/1.7 "Inter", system-ui, sans-serif; }
+body { margin: 0; }
+main { width: min(920px, calc(100% - 40px)); margin: 40px auto 80px; }
+h1, h2 { line-height: 1.25; text-wrap: balance; }
+h1 { font-size: clamp(1.9rem, 4vw, 3rem); margin: 0 0 22px; }
+h2 { font-size: 1.4rem; margin: 2rem 0 .65rem; }
+video { display: block; width: 100%; height: auto; aspect-ratio: 16/9; background: #151820; border-radius: 12px; }
+.files { display: flex; gap: .5rem 1.3rem; flex-wrap: wrap; margin: .7rem 0 2rem; }
+a { color: #245fa8; text-underline-offset: .16em; }
+p, ol, ul { margin: .55rem 0; }
+li + li { margin-top: .35rem; }
+pre { padding: .8rem 1rem; overflow: auto; border-radius: .45rem; background: #edf1f5; }
+code { font: .91em ui-monospace, monospace; }
+@media (prefers-color-scheme: dark) { a { color: #9ccdff; } pre { background: #202831; } }
+@media (max-width: 600px) { main { margin-top: 22px; } }
+.languages { display: flex; gap: 1.25rem; align-items: baseline; margin: 0 0 1rem; }
+.languages [aria-current="page"] { color: inherit; font-weight: 650; }

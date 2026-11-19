@@ -1,8 +1,13 @@
 # AOS Work 私有化部署
 
-[![观看 AOS Work 部署教程（5 分 02 秒，中文字幕）](docs/media/aos-work-deployment.jpg)](https://basilos-ai.github.io/aos-work-release/)
+[![观看 AOS Work 部署教程](docs/media/aos-work-deployment.jpg)](https://basilos-ai.github.io/aos-work-release/)
 
-[在线播放与图文步骤](https://basilos-ai.github.io/aos-work-release/) · [下载完整视频](https://github.com/basilos-ai/aos-work-release/raw/refs/heads/main/docs/media/aos-work-deployment.mp4) · [下载自动预检安装器](https://github.com/basilos-ai/aos-work-release/releases/download/v2026.11.19.1/deploy.sh)
+| 语言 / Language | 在线观看 / Watch | 视频 / MP4 | 字幕 / Captions |
+| --- | --- | --- | --- |
+| 中文 | [播放中文版 · 5 分 03 秒](https://basilos-ai.github.io/aos-work-release/) | [下载视频](https://basilos-ai.github.io/aos-work-release/media/aos-work-deployment.mp4?v=fd242173) | [中文字幕](https://basilos-ai.github.io/aos-work-release/media/aos-work-deployment.zh.vtt?v=fd242173) |
+| English | [Watch in English · 5 min 04 sec](https://basilos-ai.github.io/aos-work-release/en/) | [Download video](https://basilos-ai.github.io/aos-work-release/media/aos-work-deployment.en.mp4?v=b0915349) | [English captions](https://basilos-ai.github.io/aos-work-release/media/aos-work-deployment.en.vtt?v=b0915349) |
+
+[下载自动预检安装器](https://github.com/basilos-ai/aos-work-release/releases/download/v2026.11.19.1/deploy.sh)
 
 ## 开始部署
 
