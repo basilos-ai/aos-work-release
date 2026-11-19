@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="AOS Work 私有化部署视频与操作步骤，涵盖自动预检、HTTPS 配置、服务部署和状态检查。">
+  <title>AOS Work 私有化部署</title>
+  <style>
+    :root { color-scheme: light dark; font: 17px/1.7 "Inter", system-ui, sans-serif; }
+    body { margin: 0; }
+    main { width: min(920px, calc(100% - 40px)); margin: 40px auto 80px; }
+    h1, h2 { line-height: 1.25; text-wrap: balance; }
+    h1 { font-size: clamp(1.9rem, 4vw, 3rem); margin: 0 0 22px; }
+    h2 { font-size: 1.4rem; margin: 2rem 0 .65rem; }
+    video { display: block; width: 100%; height: auto; aspect-ratio: 16/9; background: #151820; border-radius: 12px; }
+    nav { display: flex; gap: .5rem 1.3rem; flex-wrap: wrap; margin: .7rem 0 2rem; }
+    a { color: #245fa8; text-underline-offset: .16em; }
+    p, ol, ul { margin: .55rem 0; }
+    li + li { margin-top: .35rem; }
+    pre { padding: .8rem 1rem; overflow: auto; border-radius: .45rem; background: #edf1f5; }
+    code { font: .91em ui-monospace, monospace; }
+    @media (prefers-color-scheme: dark) { a { color: #9ccdff; } pre { background: #202831; } }
+    @media (max-width: 600px) { main { margin-top: 22px; } }
+  </style>
+</head>
+<body><main>
+  <h1>AOS Work 私有化部署</h1>
+  <video controls playsinline preload="metadata" poster="media/aos-work-deployment.jpg" aria-label="AOS Work 部署教程，5 分 02 秒">
+    <source src="media/aos-work-deployment.mp4" type="video/mp4">
+    <track kind="captions" src="media/aos-work-deployment.zh.vtt" srclang="zh" label="简体中文">
+    <a href="media/aos-work-deployment.mp4">下载部署视频</a>
+  </video>
+  <nav aria-label="教程文件">
+    <a href="media/aos-work-deployment.mp4" download>下载视频（5 分 02 秒）</a>
+    <a href="media/aos-work-deployment.zh.vtt" download>中文字幕</a>
+    <a href="https://github.com/basilos-ai/aos-work-release/releases/download/v2026.11.19.1/deploy.sh">下载安装器</a>
+  </nav>
+
+  <h2>1. 准备服务器</h2>
+  <p>准备至少 4 核 CPU、8 GB 内存、部署目录所在文件系统总容量 100 GB 的 Linux 主机。服务器需要能访问镜像仓库 GHCR 和 Docker Hub。</p>
+  <p>将 Workbench、Studio 和自建对象存储的域名解析到服务器，并在安全组和主机防火墙放行入站 TCP 80、443。使用云厂商的对象存储时可以省略 Storage 域名。</p>
+
+  <h2>2. 上传并启动安装器</h2>
+  <p>下载上方的 <code>deploy.sh</code>。首次部署时，在 Termius 的 SFTP 面板创建专用目录 <code>/home/aos-work</code> 并上传脚本。已有部署继续使用原目录。在服务器终端运行：</p>
+  <pre><code>sudo bash /home/aos-work/deploy.sh</code></pre>
+  <p>安装器在 <code>Host preflight</code> 中显示 CPU、内存、磁盘总量与可用空间，并报告本机 80、443 端口是空闲、由 Nginx 监听还是有冲突。若提示缺少依赖，核对后输入 <code>y</code> 并回车。遇到 <code>[WARN]</code> 时先阅读对应行。</p>
+
+  <h2>3. 配置域名并部署服务</h2>
+  <ol>
+    <li>主菜单选 <strong>1</strong>。在子菜单选 <strong>1</strong> 配置 Workbench、<strong>2</strong> 配置 Studio、<strong>3</strong> 配置本机对象存储。每次只填写对应域名，等待 HTTPS 配置保存。安装器会从部署主机经 DNS 分别探测 HTTP 和 HTTPS。</li>
+    <li>输入 <strong>0</strong> 返回主菜单，选 <strong>2</strong> 打开部署包列表。输入 <strong>1</strong> 选择第一项。视频录制时的首项是 <code>v2026.11.19</code>，本次发布的安装器首项为 <code>v2026.11.19.1</code>。</li>
+    <li>主菜单选 <strong>3</strong>，子菜单再选 <strong>3</strong> 同时部署 Studio、Workbench。按提示选择 PostgreSQL、Redis、RabbitMQ 和对象存储的本地或外部模式，并填写凭据。</li>
+    <li>中间件就绪后，安装器继续部署 Studio 和 Workbench。按提示设置 Studio 数据加密密码及 Workbench 新建或重置用户的默认密码。单机部署的 <code>Stable sandbox host ID</code> 填 <strong>0</strong>。</li>
+    <li>看到服务的健康检查通过后，分别打开 Studio 和 Workbench 的 HTTPS 地址，确认登录页可以访问。</li>
+  </ol>
+
+  <h2>4. 查看状态与维护</h2>
+  <p>主菜单选 <strong>6</strong> 查看状态。常驻服务应为 <code>running</code>，配置了健康探针的服务应为 <code>healthy</code>。一次性初始化任务 <code>workbench-storage-init</code> 成功退出时显示 <code>exited</code>。最后核对汇总行 <code>All healthy</code>。</p>
+  <p>更新服务版本使用主菜单 <strong>4</strong>，重启服务使用主菜单 <strong>5</strong>。<a href="https://github.com/basilos-ai/aos-work-release/releases/tag/v2026.11.19.1">查看版本说明和离线安装包</a>。</p>
+</main></body>
+</html>

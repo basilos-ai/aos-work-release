@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# aos-work deployment release: v2026.11.19
+# aos-work deployment release: v2026.11.19.1
 
 set -Eeuo pipefail
 export LC_ALL=C
@@ -331,7 +331,10 @@ from urllib.parse import urlsplit
 
 RELEASES = 'https://github.com/basilos-ai/aos-work-release/releases'
 # Newest first. Add the new tag here when preparing a release.
-VERSIONS = {'v2026.11.19': None}
+VERSIONS = {
+    'v2026.11.19.1': None,
+    'v2026.11.19': '246ea34d4ef1ecebcb83380bc571dd4cb80002e8ddbf7fcb588ac72d6de7e136',
+}
 # Keep verification for pending installs that resume from a manually uploaded archive.
 ARCHIVED_VERSIONS = {
     'v2026.11.18.2': None,
@@ -1176,6 +1179,44 @@ def ensure_ports(group, selected, cfg, *, interactive=True, owners=None, reserve
     return changed
 
 
+def ingress_listener(port):
+    """Report whether the host's Nginx can use this port, independently of firewall policy."""
+    lines = capture(['ss', '-H', '-ltnp', f'sport = :{port}']).splitlines()
+    if not lines:
+        if port_available(port):
+            return True, 'free for Nginx on this host'
+        return False, 'no listener listed, but binding failed; check port use and permissions'
+    owners = [set(re.findall(r'\("([^"]+)",pid=', line)) for line in lines]
+    if all(names == {'nginx'} for names in owners):
+        return True, 'already listening with Nginx on this host'
+    names = sorted(set().union(*owners) - {'nginx'})
+    if names:
+        return False, 'occupied by ' + ', '.join(names) + '; resolve the conflict before configuring HTTPS'
+    return False, 'listener owner could not be verified; run the installer with sudo'
+
+
+def report_host():
+    gb = 10**9
+    cpus = len(os.sched_getaffinity(0))
+    memory = os.sysconf('SC_PHYS_PAGES') * os.sysconf('SC_PAGE_SIZE')
+    disk = shutil.disk_usage(ROOT)
+    checks = [
+        (cpus >= 4, f'CPU: {cpus} logical CPUs (minimum 4)'),
+        (memory >= 8 * gb, f'RAM: {memory / gb:.2f} GB (minimum 8 GB)'),
+        (disk.total >= 100 * gb and disk.free > 0,
+         f'Storage: {disk.total / gb:.2f} GB total, {disk.free / gb:.2f} GB available '
+         f'on {ROOT} (minimum 100 GB total)'),
+    ]
+    for port in (80, 443):
+        usable, detail = ingress_listener(port)
+        checks.append((usable, f'TCP {port}: {detail}'))
+    print('Host preflight')
+    for ok, detail in checks:
+        print(f'[{"OK" if ok else "WARN"}] {detail}')
+    print('Public routing is checked by domain during HTTPS setup. Allow inbound TCP 80 and 443.')
+    return all(ok for ok, _ in checks)
+
+
 def preflight():
     deployment_state.begin(ROOT)
     prepare_envs()
@@ -1194,11 +1235,6 @@ def preflight():
             cfg['services'][service] = {'ports': [
                 {'published': env[key], 'target': target or 0} for key, target in mappings]}
         ensure_ports(group, cfg['services'], cfg, owners=owners, reserved=reserved)
-    if sys.platform.startswith('linux'):
-        for port in (80, 443):
-            listeners = capture(['ss', '-H', '-ltnp', f'sport = :{port}'])
-            if any('nginx' not in line for line in listeners.splitlines()):
-                print(f'[WARN] TCP {port} is occupied. Move the existing listener before configuring public HTTPS.')
     print('Application ports checked.')
 
 
@@ -1251,13 +1287,17 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='action', required=True)
     sub.add_parser('preflight')
+    sub.add_parser('host-check')
     sub.add_parser('check-files')
     check = sub.add_parser('check-images'); check.add_argument('group', choices=PORTS)
     pull = sub.add_parser('pull'); pull.add_argument('image'); pull.add_argument('--force', action='store_true')
     start = sub.add_parser('up'); start.add_argument('group', choices=PORTS); start.add_argument('services', nargs='*')
     start.add_argument('--recreate', action='store_true'); start.add_argument('--no-deps', action='store_true')
     args = parser.parse_args()
-    if args.action == 'preflight':
+    if args.action == 'host-check':
+        if not report_host():
+            sys.exit(3)
+    elif args.action == 'preflight':
         preflight()
     elif args.action == 'check-files':
         check_files()
@@ -1388,6 +1428,23 @@ def wait_for_site(domain, health_path, expected_body=None, *, tls=True):
     raise ValueError(f'{scheme.upper()} for {domain} did not become ready within 30 seconds. Last error: {detail}')
 
 
+def check_domain_route(domain, challenge_path, token):
+    for scheme, port in [('http', 80), ('https', 443)]:
+        url = f'{scheme}://{domain}{challenge_path}'
+        try:
+            result = subprocess.run(
+                ['curl', '-q', '--noproxy', '*', '-fsS', '--connect-timeout', '3', '--max-time', '6',
+                 '--max-filesize', '512', '--write-out', '\n%{http_code}', url], capture_output=True)
+            verified = result.returncode == 0 and result.stdout == token.encode() + b'\n200'
+        except OSError:
+            verified = False
+        if verified:
+            print(f'[OK] {domain}:{port} served the expected test file via DNS from this server.')
+        else:
+            print(f'[WARN] Could not confirm {domain}:{port} via DNS from this server. '
+                  'Check inbound firewall/security-group rules, DNS and NAT routing from an external network.')
+
+
 def refresh_port(root, group, key, port):
     state = root / '.domains.json'
     if not state.exists():
@@ -1426,9 +1483,9 @@ def setup(target, domain, port):
     print(f'{domain} resolves to {", ".join(sorted(addresses))}. Configuring HTTPS.', flush=True)
     # Existing non-nginx listeners must be handled before changing any site configuration.
     for number in (80, 443):
-        listeners = ops.capture(['ss', '-H', '-ltnp', f'sport = :{number}']).strip()
-        if listeners and any('nginx' not in line for line in listeners.splitlines()):
-            raise ValueError(f'Another service occupies port {number}. Move its listener and retry.')
+        usable, detail = ops.ingress_listener(number)
+        if not usable:
+            raise ValueError(f'TCP {number}: {detail}.')
     if not shutil.which('nginx') or not shutil.which('certbot'):
         raise ValueError('Configure Nginx and Certbot during the startup environment check.')
     ops.run(['bash', str(SUPPORT / 'host-state.sh'), 'mark', 'nginx'])
@@ -1469,6 +1526,7 @@ def setup(target, domain, port):
         ops.atomic_write(conf, nginx_text(domain, port, True)); conf.chmod(0o644)
         reload_nginx()
         wait_for_site(domain, challenge_path, token)
+        check_domain_route(domain, challenge_path, token)
     except BaseException:
         if previous is None:
             conf.unlink(missing_ok=True)
@@ -3456,7 +3514,7 @@ compose_recreate() { ops up "${1%_compose}" "$2" --recreate --no-deps; }
 ops() { python3 "$SUPPORT_DIR/deploy-support.py" "$@"; }
 
 environment_check() {
-  local missing=() cmd help
+  local missing=() cmd help host_status=0 host_checked=false
   if command -v python3 >/dev/null && ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 9))'; then
     warn "Python 3.9 or later is required."; return 1
   fi
@@ -3464,6 +3522,11 @@ environment_check() {
     command -v "$cmd" >/dev/null || missing+=("$cmd")
   done
   if [[ "$(uname -s)" == Linux ]]; then
+    if command -v python3 >/dev/null && command -v ss >/dev/null; then
+      host_checked=true
+      ops host-check || host_status=$?
+      (( host_status == 0 || host_status == 3 )) || return 1
+    fi
     for cmd in ss nginx certbot systemctl; do
       command -v "$cmd" >/dev/null || missing+=("$cmd")
     done
@@ -3478,6 +3541,10 @@ environment_check() {
       warn 'A Docker Compose plugin supporting --wait is required.'; return 1;
     }
   fi
+  if [[ "$(uname -s)" == Linux && "$host_checked" == false ]]; then
+    ops host-check || host_status=$?
+    (( host_status == 0 || host_status == 3 )) || return 1
+  fi
   if ! docker info >/dev/null 2>&1; then
     if [[ "$(uname -s)" == Linux && "$EUID" == 0 ]] && ! systemctl is-active --quiet docker &&
        confirm 'Start the Docker service?' n; then
@@ -3486,7 +3553,11 @@ environment_check() {
     docker info >/dev/null 2>&1 || { warn 'Docker daemon unavailable. Check its service and socket permissions.'; return 1; }
   fi
   ops preflight || return 1
-  success "Environment ready: $(uname -s)/$(uname -m)"
+  if (( host_status == 3 )); then
+    warn "Dependencies ready. Review the host preflight warnings before deploying."
+  else
+    success "Environment ready: $(uname -s)/$(uname -m)"
+  fi
 }
 
 restore_middleware_modes() {
