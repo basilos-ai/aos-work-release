@@ -2,7 +2,7 @@
 
 [![观看 AOS Work 部署教程（5 分 02 秒，中文字幕）](docs/media/aos-work-deployment.jpg)](https://basilos-ai.github.io/aos-work-release/)
 
-[在线播放与图文步骤](https://basilos-ai.github.io/aos-work-release/) · [下载完整视频](https://github.com/basilos-ai/aos-work-release/raw/refs/heads/main/docs/media/aos-work-deployment.mp4) · [下载自动预检安装器](https://github.com/basilos-ai/aos-work-release/releases/download/v2026.11.20.1/deploy.sh)
+[在线播放与图文步骤](https://basilos-ai.github.io/aos-work-release/) · [下载完整视频](https://github.com/basilos-ai/aos-work-release/raw/refs/heads/main/docs/media/aos-work-deployment.mp4) · [下载自动预检安装器](https://github.com/basilos-ai/aos-work-release/releases/download/v2026.11.20.2/deploy.sh)
 
 ## 开始部署
 
@@ -16,4 +16,4 @@ sudo bash /home/aos-work/deploy.sh
 
 启动后先看 `Host preflight` 的 CPU、内存、磁盘和端口结果。主菜单依次选择 **1** 配置域名和 HTTPS、**2** 获取部署包、**3** 部署服务。完成后选择 **6** 查看容器状态。
 
-[版本说明与离线安装包](https://github.com/basilos-ai/aos-work-release/releases/tag/v2026.11.20.1)
+[版本说明与离线安装包](https://github.com/basilos-ai/aos-work-release/releases/tag/v2026.11.20.2)

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# aos-work deployment release: v2026.11.20.1
+# aos-work deployment release: v2026.11.20.2
 
 set -Eeuo pipefail
 export LC_ALL=C
@@ -332,7 +332,8 @@ from urllib.parse import urlsplit
 RELEASES = 'https://github.com/basilos-ai/aos-work-release/releases'
 # Newest first. Add the new tag here when preparing a release.
 VERSIONS = {
-    'v2026.11.20.1': None,
+    'v2026.11.20.2': None,
+    'v2026.11.20.1': 'ce0718d8c42b0a6ae04300207b0fc52ef29ad43b20a4619131f52e28e333ae38',
     'v2026.11.20': 'f6ac66c4c6e11b7c99cee52ee472d3f7b01fd9e93f546ffc73fabf82c9cbf96a',
     'v2026.11.19.1': 'f3d672c6166e084786c039aa2f0735762df930b24f0b6a4a738b64eaba057292',
     'v2026.11.19': '246ea34d4ef1ecebcb83380bc571dd4cb80002e8ddbf7fcb588ac72d6de7e136',
@@ -634,7 +635,7 @@ def paths_to_reset(root, env):
         files.append(custom)
     storage = root / 'workbench/storage'
     if storage.resolve() != storage:
-        raise ValueError('Workbench storage path contains a symlink.')
+        raise ValueError('AosWork storage path contains a symlink.')
     if storage.is_dir():
         for child in storage.iterdir():
             if child.name not in ('templates', 'nginx'):
@@ -1138,6 +1139,10 @@ def sync_port_urls(group, key, old, new):
     domain.refresh_port(ROOT, group, key, new)
 
 
+def service_label(service):
+    return service.replace('workbench', 'AosWork', 1) if service.startswith('workbench') else service
+
+
 def ensure_ports(group, selected, cfg, *, interactive=True, owners=None, reserved=None):
     owners = port_owners() if owners is None else owners
     reserved = {} if reserved is None else reserved
@@ -1156,10 +1161,10 @@ def ensure_ports(group, selected, cfg, *, interactive=True, owners=None, reserve
                 if 1 <= current <= 65535 and current not in reserved and free:
                     break
                 if key is None:
-                    raise ValueError(f'Port {current} for {service} is in use and has no configurable host port.')
+                    raise ValueError(f'Port {current} for {service_label(service)} is in use and has no configurable host port.')
                 if not interactive:
-                    raise ValueError(f'Port {current} for {service} is in use. Resolve the conflict and retry.')
-                print(f'{group}/{service}: {key}={published if current == old else current} is invalid, reserved or in use.')
+                    raise ValueError(f'Port {current} for {service_label(service)} is in use. Resolve the conflict and retry.')
+                print(f'{service_label(service)}: host port {published if current == old else current} is invalid, reserved or in use.')
                 val = ask('New port (1-65535, 0 to cancel)')
                 if val == '0':
                     raise ValueError('Port change cancelled.')
@@ -1176,7 +1181,7 @@ def ensure_ports(group, selected, cfg, *, interactive=True, owners=None, reserve
                     for path, text in snapshots.items():
                         atomic_write(path, text)
                     raise
-                print(f'Saved {key}={current}.')
+                print(f'Saved host port {current} for {service_label(service)}.')
                 changed = True
     return changed
 
@@ -1258,7 +1263,7 @@ def up(group, services=(), recreate=False, no_deps=False, *, interactive=True):
     selected = select_services(cfg, services, no_deps)
     for service in selected:
         if 'CHANGE_ME' in json.dumps(cfg['services'][service]):
-            raise ValueError(f'Configure placeholders for {service} before deployment.')
+            raise ValueError(f'Configure placeholders for {service_label(service)} before deployment.')
     for image in dict.fromkeys(cfg['services'][s]['image'] for s in selected):
         pull_image(image, interactive=interactive)
     while True:
@@ -1473,7 +1478,7 @@ def refresh_port(root, group, key, port):
 
 def setup(target, domain, port):
     if not valid_domain(domain):
-        raise ValueError(f'Enter a fully qualified domain without protocol, path or port, e.g. {target}.example.com.')
+        raise ValueError(f'Enter a fully qualified domain without protocol, path or port, e.g. app.example.com.')
     if not 1 <= port <= 65535 or port in (80, 443):
         raise ValueError('Reserve ports 80 and 443 for Nginx. Choose a different application host port.')
     try:
@@ -1585,7 +1590,7 @@ def main():
         raise ValueError('Domain setup requires root. Run sudo bash deploy.sh.')
     services = {'1': 'workbench', '2': 'studio', '3': 'storage'}
     while True:
-        print('Set up domain and HTTPS\n  1) Workbench\n  2) Studio\n  3) Storage\n  0) Back')
+        print('Set up domain and HTTPS\n  1) AosWork\n  2) Studio\n  3) Storage\n  0) Back')
         choice = ops.ask('Select', '0')
         if choice == '0':
             return
@@ -1596,7 +1601,8 @@ def main():
         group, key = TARGETS[target]
         try:
             port = int(ops.read_env(ops.env_path(group))[key])
-            domain = ops.ask(f'{target.capitalize()} domain name (e.g. {target}.example.com)').lower().rstrip('.')
+            label = 'AosWork' if target == 'workbench' else target.capitalize()
+            domain = ops.ask(f'{label} domain name (e.g. {label.lower()}.example.com)').lower().rstrip('.')
             setup(target, domain, port)
             apply_urls(target, domain)
             print('Domain, certificate and application settings saved: https://' + domain)
@@ -1917,11 +1923,11 @@ COMPOSE_PROJECT_NAME=basil-studio
 COMPOSE_PATH_SEPARATOR=,
 COMPOSE_FILE=docker-compose.studio.yaml
 
-# Studio images tested together on 2026-11-16. Validate on the target server.
+# Studio images for this deployment release.
 STUDIO_IMAGE=ghcr.io/basilos-ai/studio-backend
-STUDIO_VERSION=v1.8.10
+STUDIO_VERSION=v1.8.12
 STUDIO_FRONTEND_IMAGE=ghcr.io/basilos-ai/studio-frontend
-STUDIO_FRONTEND_VERSION=v1.8.12
+STUDIO_FRONTEND_VERSION=v1.8.14
 NODE_SANDBOX_IMAGE=ghcr.io/basilos-ai/studio-node-sandbox
 NODE_SANDBOX_VERSION=v1.0.0
 
@@ -1929,6 +1935,9 @@ NODE_SANDBOX_VERSION=v1.0.0
 STUDIO_API_HOST_PORT=12001
 STUDIO_FRONTEND_HOST_PORT=12000
 NODE_SANDBOX_HOST_PORT=12002
+
+# Shared with AosWork. The installer sets this before either application starts.
+DEFAULT_USER_PASSWORD=
 
 # Studio runtime
 JAVA_OPTS=-Xms1g -Xmx2g
@@ -2037,7 +2046,7 @@ DB_SCHEMA=workbench
 RUNTIME_DB_SCHEMA=runtime
 JWT_SECRET=CHANGE_ME_RANDOM_JWT_SECRET
 ENCRYPTION_KEY=CHANGE_ME_RANDOM_ENCRYPTION_KEY
-# Used for new or reset users. Migrations set the initial built-in admin password.
+# Shared with Studio. Used for new or reset AosWork users.
 DEFAULT_USER_PASSWORD=CHANGE_ME_DEFAULT_USER_PASSWORD
 
 # Runtime and Workbench resolve this URL to the shared /basilos vhost.
@@ -3061,7 +3070,7 @@ ensure_workbench_generated_secret() {
   value="$(workbench_get_env "$key")"
   if workbench_value_needs_configuration "$value"; then
     workbench_set_env "$key" "$(generate_secret)"
-    info "Generated Workbench secret: $key"
+    info "Generated AosWork secret: ${2:-$key}"
   fi
 }
 
@@ -3101,7 +3110,7 @@ sync_workbench_shared_configuration() {
 
 ensure_workbench_gateway() {
   local gateway_url=""
-  # The frontend gateway proxies Studio, independently of the Workbench API URL.
+  # The frontend gateway proxies Studio, independently of the AosWork API URL.
   gateway_url="$(workbench_get_env BASILOS_GATEWAY_HOST)"
   if workbench_value_needs_configuration "$gateway_url"; then
     gateway_url="http://studio-frontend/"
@@ -3113,41 +3122,35 @@ ensure_workbench_gateway() {
 configure_workbench() {
   local api_url=""
   local frontend_url=""
-  local admin_password=""
   local api_port=""
   local frontend_port=""
 
   sync_workbench_shared_configuration
-  ensure_image_version workbench_get_env workbench_set_env WORKBENCH_VERSION "Workbench API"
-  ensure_image_version workbench_get_env workbench_set_env WORKBENCH_FRONTEND_VERSION "Workbench Frontend"
-  ensure_image_version workbench_get_env workbench_set_env RUNTIME_VERSION "Workbench Runtime"
+  ensure_image_version workbench_get_env workbench_set_env WORKBENCH_VERSION "AosWork API"
+  ensure_image_version workbench_get_env workbench_set_env WORKBENCH_FRONTEND_VERSION "AosWork Frontend"
+  ensure_image_version workbench_get_env workbench_set_env RUNTIME_VERSION "AosWork Runtime"
   ensure_image_version workbench_get_env workbench_set_env RUNTIME_SANDBOX_VERSION "Runtime Sandbox"
   ensure_image_version workbench_get_env workbench_set_env RUNTIME_NGINX_VERSION "Runtime Gateway"
 
   api_port="$(workbench_get_env WORKBENCH_HOST_PORT)"
   frontend_port="$(workbench_get_env WORKBENCH_FRONTEND_HOST_PORT)"
 
-  ensure_workbench_url APP_URL "Workbench API browser URL" "$frontend_port"
+  ensure_workbench_url APP_URL "AosWork API browser URL" "$frontend_port"
   api_url="$WORKBENCH_VALUE"
-  parse_url "$api_url" || die "Invalid Workbench API URL: $api_url"
+  parse_url "$api_url" || die "Invalid AosWork API URL: $api_url"
   workbench_set_env BASILCRAW_API_HOST "$URL_AUTHORITY"
 
   ensure_workbench_gateway
 
-  ensure_workbench_url FRONTEND_URL "Workbench frontend URL" "$frontend_port"
+  ensure_workbench_url FRONTEND_URL "AosWork frontend URL" "$frontend_port"
   frontend_url="$WORKBENCH_VALUE"
   workbench_set_env FRONTEND_OAUTH_RESULT_URL "$frontend_url"
 
   ensure_workbench_generated_secret JWT_SECRET
   ensure_workbench_generated_secret ENCRYPTION_KEY
   ensure_workbench_generated_secret RUNTIME_HTTP_SERVICE_TOKEN
-  ensure_workbench_generated_secret RUNTIME_TO_WORKBENCH_SERVICE_TOKEN
+  ensure_workbench_generated_secret RUNTIME_TO_WORKBENCH_SERVICE_TOKEN "runtime-to-API service token"
 
-  admin_password="$(workbench_get_env DEFAULT_USER_PASSWORD)"
-  if workbench_value_needs_configuration "$admin_password"; then
-    prompt_secret_confirm admin_password "Default password for newly created or reset Workbench users"
-    workbench_set_env DEFAULT_USER_PASSWORD "$admin_password"
-  fi
   ensure_workbench_text RUNTIME_SANDBOX_HOST_ID "Stable sandbox host ID"
 }
 
@@ -3159,7 +3162,7 @@ check_workbench_placeholders() {
     index(substr($0, index($0, "=") + 1), "CHANGE_ME") { print $1 }
   ' "$WORKBENCH_ENV_FILE")"
   if [[ -n "$keys" ]]; then
-    warn "Unconfigured Workbench variables: $(printf '%s\n' "$keys" | tr '\n' ' ')"
+    warn "Unconfigured AosWork variables: $(printf '%s\n' "$keys" | tr '\n' ' ')"
     return 1
   fi
 }
@@ -3199,9 +3202,9 @@ deploy_workbench() {
   local middleware_network=""
   local sandbox_image=""
 
-  info "Deploy Workbench"
+  info "Deploy AosWork"
   if ! workbench_storage_supported; then
-    warn "Workbench requires MinIO object storage."
+    warn "AosWork requires MinIO object storage."
     return 1
   fi
 
@@ -3213,7 +3216,7 @@ deploy_workbench() {
 
   middleware_network="$(dotenv_get BASIL_NETWORK_NAME)"
   docker network inspect "$middleware_network" >/dev/null ||
-    die "Missing Workbench Docker network: $middleware_network"
+    die "Missing AosWork Docker network: $middleware_network"
   workbench_compose config --quiet
 
   sandbox_image="$(workbench_get_env RUNTIME_SANDBOX_IMAGE):$(workbench_get_env RUNTIME_SANDBOX_VERSION)"
@@ -3223,17 +3226,19 @@ deploy_workbench() {
   ops up workbench
   if ! test_workbench_http; then
     workbench_compose ps
-    die "Workbench HTTP health checks failed. Check container status and logs."
+    die "AosWork HTTP health checks failed. Check container status and logs."
   fi
   workbench_compose ps
-  success "Workbench passed its HTTP health checks."
-  info "Workbench frontend URL: $(workbench_get_env FRONTEND_URL)"
-  info "Workbench API URL: $(workbench_get_env APP_URL)"
+  success "AosWork passed its HTTP health checks."
+  info "AosWork frontend URL: $(workbench_get_env FRONTEND_URL)"
+  info "AosWork API URL: $(workbench_get_env APP_URL)"
+  printf '\nAosWork administrator (fresh installation)\n  Username: admin\n  Default password: Admin@12345\n'
+  printf 'Change the default password on first sign-in. For an existing installation, use your current password.\n'
 }
 
 deploy_all() {
   if ! workbench_storage_supported; then
-    warn "Deploying Studio and Workbench together requires MinIO."
+    warn "Deploying Studio and AosWork together requires MinIO."
     return 1
   fi
   deploy_studio
@@ -3382,7 +3387,7 @@ update_runtime_sandbox_image() {
 
 workbench_env_exists() {
   if [[ ! -f "$WORKBENCH_ENV_FILE" ]]; then
-    warn "Deploy Workbench first to create .env.workbench."
+    warn "Deploy AosWork first to create .env.workbench."
     return 1
   fi
 }
@@ -3395,10 +3400,10 @@ service_update_menu() {
     printf '  1) Studio API\n'
     printf '  2) Studio Frontend\n'
     printf '  3) Studio Node Sandbox\n'
-    printf '  4) Workbench API\n'
-    printf '  5) Workbench Frontend\n'
-    printf '  6) Workbench Runtime\n'
-    printf '  7) Workbench Runtime Gateway\n'
+    printf '  4) AosWork API\n'
+    printf '  5) AosWork Frontend\n'
+    printf '  6) AosWork Runtime\n'
+    printf '  7) AosWork Runtime Gateway\n'
     printf '  8) Runtime Sandbox image\n'
     printf '  9) PostgreSQL\n'
     printf ' 10) Redis\n'
@@ -3421,13 +3426,13 @@ service_update_menu() {
         ;;
       4)
         if workbench_env_exists; then
-          warn "Workbench may run database migrations at startup. Reverting the image does not revert migrations."
-          update_service_version "Workbench API" workbench_get_env workbench_set_env workbench_compose WORKBENCH_IMAGE WORKBENCH_VERSION workbench 300 y "$WORKBENCH_ENV_FILE"
+          warn "AosWork may run database migrations at startup. Reverting the image does not revert migrations."
+          update_service_version "AosWork API" workbench_get_env workbench_set_env workbench_compose WORKBENCH_IMAGE WORKBENCH_VERSION workbench 300 y "$WORKBENCH_ENV_FILE"
         fi
         ;;
-      5) if workbench_env_exists; then update_service_version "Workbench Frontend" workbench_get_env workbench_set_env workbench_compose WORKBENCH_FRONTEND_IMAGE WORKBENCH_FRONTEND_VERSION workbench-frontend 300 y "$WORKBENCH_ENV_FILE"; fi ;;
-      6) if workbench_env_exists; then update_service_version "Workbench Runtime" workbench_get_env workbench_set_env workbench_compose RUNTIME_IMAGE RUNTIME_VERSION workbench-runtime-node 300 y "$WORKBENCH_ENV_FILE"; fi ;;
-      7) if workbench_env_exists; then update_service_version "Workbench Runtime Gateway" workbench_get_env workbench_set_env workbench_compose RUNTIME_NGINX_IMAGE RUNTIME_NGINX_VERSION workbench-runtime 300 y "$WORKBENCH_ENV_FILE"; fi ;;
+      5) if workbench_env_exists; then update_service_version "AosWork Frontend" workbench_get_env workbench_set_env workbench_compose WORKBENCH_FRONTEND_IMAGE WORKBENCH_FRONTEND_VERSION workbench-frontend 300 y "$WORKBENCH_ENV_FILE"; fi ;;
+      6) if workbench_env_exists; then update_service_version "AosWork Runtime" workbench_get_env workbench_set_env workbench_compose RUNTIME_IMAGE RUNTIME_VERSION workbench-runtime-node 300 y "$WORKBENCH_ENV_FILE"; fi ;;
+      7) if workbench_env_exists; then update_service_version "AosWork Runtime Gateway" workbench_get_env workbench_set_env workbench_compose RUNTIME_NGINX_IMAGE RUNTIME_NGINX_VERSION workbench-runtime 300 y "$WORKBENCH_ENV_FILE"; fi ;;
       8) if workbench_env_exists; then update_runtime_sandbox_image; fi ;;
       9)
         warn "Back up PostgreSQL and check version compatibility before updating."
@@ -3671,7 +3676,7 @@ restart_services() {
 
 service_restart_menu() {
   local choice group service
-  printf '\nRestart server\n  1) All Studio services\n  2) All Workbench services\n  3) Studio API\n  4) Studio Frontend\n  5) Node Sandbox\n  6) Workbench API\n  7) Workbench Frontend\n  8) Runtime Node\n  9) Runtime Gateway\n  10) PostgreSQL\n  11) Redis\n  12) RabbitMQ\n  13) MinIO\n  0) Back\n'
+  printf '\nRestart server\n  1) All Studio services\n  2) All AosWork services\n  3) Studio API\n  4) Studio Frontend\n  5) Node Sandbox\n  6) AosWork API\n  7) AosWork Frontend\n  8) Runtime Node\n  9) Runtime Gateway\n  10) PostgreSQL\n  11) Redis\n  12) RabbitMQ\n  13) MinIO\n  0) Back\n'
   read -r -p 'Select [0-13]: ' choice
   case "$choice" in
     0) return ;; 1) restart_services studio ;; 2) restart_services workbench ;;
@@ -3693,8 +3698,36 @@ run_menu_action() {
   [[ "$status" -eq 0 ]] || warn "Action failed (exit ${status}). Review the error above and retry."
 }
 
+# Older deployments stored this setting only in the AosWork environment.
+configure_shared_user_password() {
+  local aos_password studio_password shared_password
+  aos_password="$(workbench_get_env DEFAULT_USER_PASSWORD)"
+  studio_password="$(studio_get_env DEFAULT_USER_PASSWORD)"
+  [[ "$aos_password" != CHANGE_ME_DEFAULT_USER_PASSWORD ]] || aos_password=""
+  [[ "$studio_password" != CHANGE_ME_DEFAULT_USER_PASSWORD ]] || studio_password=""
+
+  shared_password="${aos_password:-$studio_password}"
+  if [[ -n "$aos_password" && -n "$studio_password" && "$aos_password" != "$studio_password" ]]; then
+    warn "Studio and AosWork have different default user passwords. Choose one for both."
+    shared_password=""
+  fi
+  while [[ -z "$shared_password" || "$shared_password" == *CHANGE_ME* ]]; do
+    prompt_secret_confirm shared_password "Shared default password for new Studio and AosWork users"
+    if [[ "$shared_password" == *CHANGE_ME* ]]; then
+      warn "CHANGE_ME is reserved for unconfigured values. Choose a different password."
+    fi
+  done
+  if [[ "$aos_password" != "$shared_password" ]]; then
+    workbench_set_env DEFAULT_USER_PASSWORD "$shared_password"
+  fi
+  if [[ "$studio_password" != "$shared_password" ]]; then
+    studio_set_env DEFAULT_USER_PASSWORD "$shared_password"
+  fi
+}
+
 install_selected() {
   prepare_deployment
+  configure_shared_user_password
   "$1"
 }
 
@@ -3705,7 +3738,7 @@ maintenance_selected() {
 
 deploy_menu() {
   local choice
-  printf '\nDeploy AosWork\n  1) Deploy Studio\n  2) Deploy Workbench\n  3) Deploy Studio and Workbench\n  0) Back\n'
+  printf '\nDeploy AosWork\n  1) Deploy Studio\n  2) Deploy AosWork\n  3) Deploy Studio and AosWork\n  0) Back\n'
   read -r -p 'Select [3]: ' choice || return 0
   case "${choice:-3}" in
     1) install_selected deploy_studio ;;
@@ -4000,6 +4033,8 @@ self_test() {
 }
 
 main() {
+  # Compose must use the configured application password, even if the caller exported this key.
+  unset DEFAULT_USER_PASSWORD
   case "${1-}" in
     --self-test)
       self_test
