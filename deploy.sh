@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# aos-work deployment release: v2026.11.20
+# aos-work deployment release: v2026.11.20.1
 
 set -Eeuo pipefail
 export LC_ALL=C
@@ -332,7 +332,8 @@ from urllib.parse import urlsplit
 RELEASES = 'https://github.com/basilos-ai/aos-work-release/releases'
 # Newest first. Add the new tag here when preparing a release.
 VERSIONS = {
-    'v2026.11.20': None,
+    'v2026.11.20.1': None,
+    'v2026.11.20': 'f6ac66c4c6e11b7c99cee52ee472d3f7b01fd9e93f546ffc73fabf82c9cbf96a',
     'v2026.11.19.1': 'f3d672c6166e084786c039aa2f0735762df930b24f0b6a4a738b64eaba057292',
     'v2026.11.19': '246ea34d4ef1ecebcb83380bc571dd4cb80002e8ddbf7fcb588ac72d6de7e136',
 }
@@ -2004,7 +2005,7 @@ WORKBENCH_DEPLOYMENT_ROOT=/data/basil
 WORKBENCH_IMAGE=ghcr.io/basilos-ai/workbench-backend
 WORKBENCH_VERSION=v1.8.57
 WORKBENCH_FRONTEND_IMAGE=ghcr.io/basilos-ai/workbench-frontend
-WORKBENCH_FRONTEND_VERSION=v1.8.43
+WORKBENCH_FRONTEND_VERSION=v1.8.50
 RUNTIME_IMAGE=ghcr.io/basilos-ai/workbench-runtime
 RUNTIME_VERSION=v1.8.25
 RUNTIME_SANDBOX_IMAGE=ghcr.io/basilos-ai/workbench-runtime-sandbox
