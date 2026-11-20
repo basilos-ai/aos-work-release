@@ -1,0 +1,450 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{page_title}}</title>
+  {{extra_head}}
+  <style>
+    :root {
+      --bg: #eee9df;
+      --surface: #fbf7ef;
+      --ink: #282620;
+      --muted: #81786d;
+      --line: rgba(40, 38, 32, 0.14);
+      --accent: #9a7565;
+      --accent-2: #7d8a78;
+      --accent-3: #a9a0b4;
+      --radius: 6px;
+      --max: 1440px;
+      --shadow: 0 18px 50px rgba(20, 20, 20, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+      overflow-x: hidden;
+    }
+    img { max-width: 100%; display: block; }
+    a { color: inherit; }
+    button, a { -webkit-tap-highlight-color: transparent; }
+
+    .page {
+      width: min(var(--max), calc(100vw - 40px));
+      margin: 0 auto;
+      padding: 28px 0 108px;
+    }
+
+    .pdf-export-btn {
+      position: fixed;
+      top: 14px;
+      right: 18px;
+      z-index: 80;
+      border: 1px solid var(--line);
+      background: var(--ink);
+      color: var(--bg);
+      border-radius: var(--radius);
+      padding: 10px 13px;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      cursor: pointer;
+      box-shadow: var(--shadow);
+      transition: transform 160ms ease, background 160ms ease, box-shadow 160ms ease;
+    }
+    .pdf-export-btn:hover,
+    .pdf-export-btn:focus-visible {
+      transform: translateY(-1px);
+      background: var(--accent);
+      outline: none;
+    }
+
+    .hero {
+      min-height: 54vh;
+      display: grid;
+      align-content: end;
+      gap: 22px;
+      padding: 74px 0 42px;
+      border-bottom: 1px solid var(--line);
+    }
+    .eyebrow,
+    .kicker {
+      color: var(--muted);
+      font-size: 12px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+    }
+    h1 {
+      margin: 0;
+      max-width: 1120px;
+      font-size: clamp(46px, 7vw, 118px);
+      line-height: 0.94;
+      font-weight: 620;
+      letter-spacing: 0;
+    }
+    h2 {
+      margin: 0 0 24px;
+      font-size: clamp(30px, 4vw, 68px);
+      line-height: 1;
+      font-weight: 600;
+      letter-spacing: 0;
+    }
+    h3 {
+      margin: 0 0 10px;
+      font-size: 22px;
+      line-height: 1.18;
+      letter-spacing: 0;
+    }
+    p { margin: 0; }
+    .subtitle,
+    .copy {
+      max-width: 860px;
+      color: var(--muted);
+      font-size: 17px;
+      line-height: 1.78;
+    }
+
+    .content-body > section {
+      padding: 70px 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .content-body > section:first-child {
+      padding-top: 58px;
+    }
+
+    .stack { display: grid; gap: 16px; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+    }
+    .grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
+    .card,
+    .metric-card,
+    .chart-card,
+    .table-card,
+    .product-card {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 22px;
+      transition: transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease;
+    }
+    .card:hover,
+    .metric-card:hover,
+    .chart-card:hover,
+    .table-card:hover,
+    .product-card:hover {
+      transform: translateY(-2px);
+      border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+      box-shadow: var(--shadow);
+    }
+
+    .metric-value {
+      font-size: clamp(30px, 4vw, 58px);
+      line-height: 1;
+      margin-bottom: 10px;
+    }
+    .meta-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 14px;
+      padding: 0;
+      list-style: none;
+    }
+    .meta-list li,
+    .tag {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 6px 10px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .image-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+    }
+    .image-grid.feature-first figure:first-child {
+      grid-column: span 2;
+      grid-row: span 2;
+    }
+    figure {
+      margin: 0;
+    }
+    .image-tile {
+      position: relative;
+      overflow: hidden;
+      min-height: 360px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      cursor: zoom-in;
+    }
+    .image-tile img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      transition: transform 360ms ease;
+    }
+    .image-tile:hover img { transform: scale(1.045); }
+    figcaption {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+      margin-top: 10px;
+    }
+
+    .chart {
+      width: 100%;
+      min-height: 360px;
+    }
+    .chart-card {
+      min-width: 0;
+    }
+
+    .table-card {
+      overflow-x: auto;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 640px;
+    }
+    th, td {
+      padding: 12px 10px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+      font-size: 14px;
+    }
+    th {
+      color: var(--muted);
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    tbody tr {
+      transition: background 140ms ease;
+    }
+    tbody tr:hover {
+      background: color-mix(in srgb, var(--accent) 8%, transparent);
+    }
+
+    .lightbox {
+      position: fixed;
+      inset: 0;
+      z-index: 120;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 28px;
+      background: rgba(0, 0, 0, 0.84);
+    }
+    .lightbox.is-open { display: flex; }
+    .lightbox img {
+      max-height: 88vh;
+      max-width: 92vw;
+      object-fit: contain;
+    }
+    .lightbox-close {
+      position: fixed;
+      top: 18px;
+      right: 24px;
+      border: 0;
+      background: transparent;
+      color: #fff;
+      font-size: 38px;
+      cursor: pointer;
+    }
+
+    body.style-analytics {
+  --bg: #ece8df;
+  --surface: #fbf8f1;
+  --ink: #282820;
+  --muted: #747b70;
+  --line: rgba(40, 40, 32, 0.13);
+  --accent: #7d8a78;
+  --accent-2: #a0766a;
+  --accent-3: #a9a0b4;
+  --chart-sage: #7d8a78;
+  --chart-clay: #a0766a;
+  --chart-rose: #b89a95;
+  --chart-sand: #c0aa83;
+  --chart-blue: #8796a6;
+  --chart-taupe: #94877b;
+  --chart-olive: #9aa083;
+  --chart-charcoal: #4e5048;
+  --radius: 6px;
+  --max: 1360px;
+  --shadow: 0 18px 44px rgba(40, 40, 32, 0.07);
+}
+body.style-analytics .hero {
+  min-height: 42vh;
+  border-bottom: 1px solid var(--line);
+}
+body.style-analytics h1 {
+  max-width: 980px;
+  font-size: clamp(40px, 5.8vw, 88px);
+}
+body.style-analytics h2 {
+  font-size: clamp(28px, 3.4vw, 52px);
+}
+body.style-analytics .grid.four {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+body.style-analytics .metric-card {
+  border-top: 4px solid var(--accent);
+}
+body.style-analytics .chart-card {
+  padding: 20px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--surface) 96%, var(--chart-sand)), var(--surface));
+}
+body.style-analytics .chart-card h3,
+body.style-analytics .table-card h3 {
+  font-size: 18px;
+}
+body.style-analytics .chart {
+  min-height: 390px;
+}
+body.style-analytics .image-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+body.style-analytics .image-tile {
+  min-height: 240px;
+}
+
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      *,
+      *::before,
+      *::after {
+        transition-duration: 0.01ms !important;
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+      }
+    }
+
+    @media (max-width: 900px) {
+      .page { width: min(100vw - 28px, var(--max)); }
+      .pdf-export-btn { top: auto; right: 14px; bottom: 82px; }
+      .hero { min-height: auto; padding-top: 50px; }
+      .grid,
+      .grid.two,
+      .grid.four,
+      .image-grid {
+        grid-template-columns: 1fr;
+      }
+      .image-grid.feature-first figure:first-child {
+        grid-column: auto;
+        grid-row: auto;
+      }
+      .image-tile {
+        min-height: 320px;
+      }
+    }
+
+    @media print {
+      html { scroll-behavior: auto; }
+      *,
+      *::before,
+      *::after {
+        animation: none !important;
+        transition: none !important;
+        box-shadow: none !important;
+      }
+      body {
+        background: #fff !important;
+        color: #111;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+      }
+      .page {
+        width: 100%;
+        max-width: none;
+        padding: 0;
+      }
+      .pdf-export-btn,
+      .lightbox {
+        display: none !important;
+      }
+      section,
+      .hero,
+      .card,
+      .metric-card,
+      .chart-card,
+      .table-card,
+      .product-card {
+        break-inside: avoid;
+        page-break-inside: avoid;
+      }
+      .hero {
+        min-height: auto;
+        padding: 36px 0 28px;
+      }
+      .content-body > section {
+        padding: 30px 0;
+      }
+      .image-tile img {
+        transform: none !important;
+      }
+    }
+  </style>
+</head>
+<body class="style-analytics">
+  <button class="pdf-export-btn" type="button" onclick="window.print()" aria-label="Export this page as PDF">Export PDF</button>
+
+  <main class="page">
+    <header class="hero">
+      <div class="eyebrow">{{generated_date}} | {{source_notice}}</div>
+      <h1>{{page_title}}</h1>
+      <p class="subtitle">{{page_subtitle}}</p>
+    </header>
+
+    <div class="content-body">
+      {{content_body}}
+    </div>
+  </main>
+
+  <div class="lightbox" id="lightbox" aria-modal="true" role="dialog">
+    <button class="lightbox-close" id="lightboxClose" type="button" aria-label="Close preview">x</button>
+    <img src="" alt="Preview" id="lightboxImage" />
+  </div>
+
+  <script>
+    (() => {
+      const lightbox = document.getElementById('lightbox');
+      const lightboxImage = document.getElementById('lightboxImage');
+      const lightboxClose = document.getElementById('lightboxClose');
+
+      document.querySelectorAll('.image-tile img, .product-card img').forEach((img) => {
+        img.addEventListener('click', () => {
+          if (!lightbox || !lightboxImage) return;
+          lightboxImage.src = img.currentSrc || img.src;
+          lightbox.classList.add('is-open');
+        });
+      });
+
+      if (lightboxClose && lightbox) {
+        lightboxClose.addEventListener('click', () => lightbox.classList.remove('is-open'));
+      }
+      if (lightbox) {
+        lightbox.addEventListener('click', (event) => {
+          if (event.target === lightbox) lightbox.classList.remove('is-open');
+        });
+      }
+    })();
+  </script>
+  {{extra_scripts}}
+</body>
+</html>
+

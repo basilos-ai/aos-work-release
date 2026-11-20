@@ -1,0 +1,330 @@
+schemaVersion: 1
+
+plugin:
+  key: com.tavily.api-key
+  name: Tavily Web Intelligence API
+  providerType: third_party
+  description: Third-party declarative connector for Tavily web search, extraction, site mapping, crawling, and usage reporting.
+  hasIframe: false
+
+connector:
+  key: integration-tavily
+  authProviderKey: com.tavily.api-key
+
+auth:
+  type: api_key
+  apiKey:
+    placement: header
+    name: Authorization
+    valuePrefix: "Bearer "
+    hint: "Create or sign in to an account at https://app.tavily.com/ and follow the API key guidance at https://docs.tavily.com/documentation/quickstart . Enter the raw API key only."
+
+actions:
+  - key: getUsage
+    name: Get Usage
+    description: Return API key and account usage, limits, and plan information.
+    method: GET
+    url: https://api.tavily.com/usage
+    auth: true
+    input:
+      projectId:
+        type: string
+        description: Optional Tavily project identifier used to scope the usage report.
+    headers:
+      X-Project-ID: "{{input.projectId}}"
+    responseDataPath: "$"
+
+  - key: searchWeb
+    name: Search Web
+    description: Execute a Tavily web search with explicit depth, topic, date, and result controls.
+    method: POST
+    url: https://api.tavily.com/search
+    auth: true
+    input:
+      query:
+        type: string
+        required: true
+        description: Search query to execute.
+      searchDepth:
+        type: string
+        default: basic
+        description: Search depth; use basic, advanced, fast, or ultra-fast.
+      topic:
+        type: string
+        default: general
+        description: Search topic; use general, news, or finance.
+      maxResults:
+        type: integer
+        default: 5
+        description: Maximum number of results from 0 through 20.
+      chunksPerSource:
+        type: integer
+        default: 3
+        description: Relevant chunks per source from 1 through 3 when supported by the selected depth.
+      timeRange:
+        type: string
+        description: Optional relative time filter such as day, week, month, or year.
+      startDate:
+        type: string
+        description: Optional inclusive lower publication-date boundary in YYYY-MM-DD format.
+      endDate:
+        type: string
+        description: Optional upper publication-date boundary in YYYY-MM-DD format.
+      includeAnswer:
+        type: boolean
+        default: false
+        description: Include a generated answer in the response.
+      includeRawContent:
+        type: boolean
+        default: false
+        description: Include cleaned source-page content in search results.
+      includeImages:
+        type: boolean
+        default: false
+        description: Include images associated with the query and results.
+      includeDomains:
+        type: array
+        items:
+          type: string
+        description: Optional domain allowlist.
+      excludeDomains:
+        type: array
+        items:
+          type: string
+        description: Optional domain blocklist.
+      country:
+        type: string
+        description: Optional country boost supported for general searches.
+    headers:
+      Content-Type: application/json
+    body:
+      query: "{{input.query}}"
+      search_depth: "{{input.searchDepth}}"
+      topic: "{{input.topic}}"
+      max_results: "{{input.maxResults}}"
+      chunks_per_source: "{{input.chunksPerSource}}"
+      time_range: "{{input.timeRange}}"
+      start_date: "{{input.startDate}}"
+      end_date: "{{input.endDate}}"
+      include_answer: "{{input.includeAnswer}}"
+      include_raw_content: "{{input.includeRawContent}}"
+      include_images: "{{input.includeImages}}"
+      include_domains: "{{input.includeDomains}}"
+      exclude_domains: "{{input.excludeDomains}}"
+      country: "{{input.country}}"
+    responseDataPath: "$"
+
+  - key: extractUrls
+    name: Extract URLs
+    description: Extract and optionally rerank content from one or more web pages.
+    method: POST
+    url: https://api.tavily.com/extract
+    auth: true
+    input:
+      urls:
+        type: array
+        required: true
+        items:
+          type: string
+        description: One through 20 public URLs to extract.
+      query:
+        type: string
+        description: Optional intent used to rerank extracted chunks.
+      chunksPerSource:
+        type: integer
+        default: 3
+        description: Relevant chunks to return per source.
+      extractDepth:
+        type: string
+        default: basic
+        description: Extraction depth; use basic or advanced.
+      includeImages:
+        type: boolean
+        default: false
+        description: Include images discovered on the source pages.
+      includeFavicon:
+        type: boolean
+        default: false
+        description: Include the favicon for each successful source.
+      format:
+        type: string
+        default: markdown
+        description: Extracted content format; use markdown or text.
+      timeout:
+        type: integer
+        default: 30
+        description: Maximum extraction time in seconds from 1 through 60.
+    headers:
+      Content-Type: application/json
+    body:
+      urls: "{{input.urls}}"
+      query: "{{input.query}}"
+      chunks_per_source: "{{input.chunksPerSource}}"
+      extract_depth: "{{input.extractDepth}}"
+      include_images: "{{input.includeImages}}"
+      include_favicon: "{{input.includeFavicon}}"
+      format: "{{input.format}}"
+      timeout: "{{input.timeout}}"
+      include_usage: true
+    responseDataPath: "$"
+
+  - key: mapSite
+    name: Map Site
+    description: Discover URLs in a website graph without extracting full page content.
+    method: POST
+    url: https://api.tavily.com/map
+    auth: true
+    input:
+      url:
+        type: string
+        required: true
+        description: Public root URL to map.
+      instructions:
+        type: string
+        description: Optional natural-language instructions for relevant page discovery.
+      maxDepth:
+        type: integer
+        default: 1
+        description: Maximum graph depth from 1 through 5.
+      maxBreadth:
+        type: integer
+        default: 10
+        description: Maximum links followed at each graph level.
+      limit:
+        type: integer
+        default: 10
+        description: Maximum total links to process.
+      selectPaths:
+        type: array
+        items:
+          type: string
+        description: Optional regular-expression path allowlist.
+      excludePaths:
+        type: array
+        items:
+          type: string
+        description: Optional regular-expression path blocklist.
+      allowExternal:
+        type: boolean
+        default: false
+        description: Allow links outside the root domain in the final results.
+      timeout:
+        type: integer
+        default: 60
+        description: Maximum mapping time in seconds from 10 through 150.
+    headers:
+      Content-Type: application/json
+    body:
+      url: "{{input.url}}"
+      instructions: "{{input.instructions}}"
+      max_depth: "{{input.maxDepth}}"
+      max_breadth: "{{input.maxBreadth}}"
+      limit: "{{input.limit}}"
+      select_paths: "{{input.selectPaths}}"
+      exclude_paths: "{{input.excludePaths}}"
+      allow_external: "{{input.allowExternal}}"
+      timeout: "{{input.timeout}}"
+      include_usage: true
+    responseDataPath: "$"
+
+  - key: crawlSite
+    name: Crawl Site
+    description: Traverse a website graph and return extracted content from discovered pages.
+    method: POST
+    url: https://api.tavily.com/crawl
+    auth: true
+    input:
+      url:
+        type: string
+        required: true
+        description: Public root URL to crawl.
+      instructions:
+        type: string
+        description: Optional natural-language instructions for relevant content discovery.
+      chunksPerSource:
+        type: integer
+        default: 3
+        description: Relevant chunks per page from 1 through 5 when instructions are present.
+      maxDepth:
+        type: integer
+        default: 1
+        description: Maximum graph depth from 1 through 5.
+      maxBreadth:
+        type: integer
+        default: 10
+        description: Maximum links followed at each graph level.
+      limit:
+        type: integer
+        default: 10
+        description: Maximum total links to process.
+      selectPaths:
+        type: array
+        items:
+          type: string
+        description: Optional regular-expression path allowlist.
+      excludePaths:
+        type: array
+        items:
+          type: string
+        description: Optional regular-expression path blocklist.
+      allowExternal:
+        type: boolean
+        default: false
+        description: Allow links outside the root domain in the final results.
+      extractDepth:
+        type: string
+        default: basic
+        description: Extraction depth; use basic or advanced.
+      format:
+        type: string
+        default: markdown
+        description: Extracted page format; use markdown or text.
+      timeout:
+        type: integer
+        default: 60
+        description: Maximum crawl time in seconds from 10 through 150.
+    headers:
+      Content-Type: application/json
+    body:
+      url: "{{input.url}}"
+      instructions: "{{input.instructions}}"
+      chunks_per_source: "{{input.chunksPerSource}}"
+      max_depth: "{{input.maxDepth}}"
+      max_breadth: "{{input.maxBreadth}}"
+      limit: "{{input.limit}}"
+      select_paths: "{{input.selectPaths}}"
+      exclude_paths: "{{input.excludePaths}}"
+      allow_external: "{{input.allowExternal}}"
+      extract_depth: "{{input.extractDepth}}"
+      format: "{{input.format}}"
+      timeout: "{{input.timeout}}"
+      include_usage: true
+    responseDataPath: "$"
+
+errors:
+  400: INVALID_ARGUMENT
+  401: AUTHENTICATION_FAILED
+  403: PERMISSION_DENIED
+  429: RATE_LIMITED
+  432: PLAN_LIMIT_EXCEEDED
+  433: PAYGO_LIMIT_EXCEEDED
+  500: THIRD_PARTY_ERROR
+
+rateLimit:
+  subject: connection
+  limit: 100
+  windowSeconds: 60
+
+redaction:
+  request:
+    - path: $.headers.Authorization
+      strategy: remove
+    - path: $.body.query
+      strategy: pii_mask
+    - path: $.body.instructions
+      strategy: pii_mask
+    - path: $.body.urls
+      strategy: pii_mask
+  response:
+    - path: $.results
+      strategy: pii_mask

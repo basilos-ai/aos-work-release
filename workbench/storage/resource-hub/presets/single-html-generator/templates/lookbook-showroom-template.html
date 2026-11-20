@@ -1,0 +1,1155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{page_title}}</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --ink: #25231f;
+      --ink-2: #565049;
+      --muted: #8b8278;
+      --bg: #ede8df;
+      --bg-2: #e3ddd2;
+      --bg-3: #d8d0c3;
+      --surface: #f7f2e9;
+      --border: #cfc6b8;
+      --accent: #9a7565;
+      --accent-2: #7d8a78;
+      --accent-3: #a58d6f;
+      --white: #fffaf2;
+      --radius: 8px;
+      --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+      --serif: Georgia, "Times New Roman", serif;
+      --ease: cubic-bezier(.4,0,.2,1);
+    }
+    html, body {
+      height: 100%;
+      overflow: hidden;
+      background: var(--ink);
+      color: var(--ink);
+      font-family: var(--sans);
+    }
+    button, a { color: inherit; font: inherit; -webkit-tap-highlight-color: transparent; }
+    img { display: block; max-width: 100%; }
+
+    .screen {
+      position: fixed;
+      inset: 0;
+      display: none;
+      flex-direction: column;
+    }
+    .screen.active { display: flex; }
+
+    .stage {
+      background: var(--ink);
+      overflow: hidden;
+    }
+    .stage-header {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 20;
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 24px;
+      padding: 22px 40px 0;
+      pointer-events: none;
+    }
+    .stage-brand {
+      color: var(--accent);
+      font-family: var(--serif);
+      font-size: 30px;
+      line-height: 1;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+    }
+    .stage-title,
+    .stage-season {
+      margin-top: 5px;
+      color: rgba(247, 242, 233, .46);
+      font-family: var(--mono);
+      font-size: 10px;
+      letter-spacing: .18em;
+      text-transform: uppercase;
+    }
+    .stage-season {
+      text-align: right;
+      color: rgba(247, 242, 233, .32);
+    }
+    .looks-row {
+      display: flex;
+      align-items: flex-end;
+      justify-content: center;
+      height: 100vh;
+      padding: 0 20px;
+      gap: 0;
+      position: relative;
+    }
+    .look-slot {
+      flex: 1;
+      max-width: 260px;
+      min-width: 0;
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      cursor: pointer;
+      border: 0;
+      background: transparent;
+      transition: flex .48s var(--ease);
+    }
+    .look-slot:hover,
+    .look-slot:focus-visible {
+      flex: 1.18;
+      outline: none;
+    }
+    .look-img-wrap {
+      width: 100%;
+      height: 100vh;
+      position: relative;
+      overflow: hidden;
+      display: flex;
+      align-items: flex-end;
+      justify-content: center;
+      background: color-mix(in srgb, var(--ink) 84%, var(--accent-2));
+    }
+    .look-img {
+      height: 92vh;
+      width: 100%;
+      object-fit: cover;
+      object-position: center bottom;
+      transition: transform .5s var(--ease), filter .4s var(--ease);
+      filter: brightness(.76) saturate(.86) contrast(1.03);
+    }
+    .look-slot:hover .look-img,
+    .look-slot:focus-visible .look-img {
+      transform: scale(1.04) translateY(-8px);
+      filter: brightness(.96) saturate(.94) contrast(1.03);
+    }
+    .look-grad {
+      position: absolute;
+      inset: auto 0 0;
+      height: 58%;
+      background: linear-gradient(to top, rgba(37,35,31,.86), rgba(37,35,31,0));
+      pointer-events: none;
+    }
+    .look-label {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      padding: 0 16px 30px;
+      text-align: center;
+      transform: translateY(5px);
+      transition: transform .3s var(--ease);
+    }
+    .look-slot:hover .look-label,
+    .look-slot:focus-visible .look-label { transform: translateY(0); }
+    .ll-kicker {
+      margin-bottom: 5px;
+      color: var(--accent);
+      font-family: var(--mono);
+      font-size: 8px;
+      letter-spacing: .18em;
+      text-transform: uppercase;
+    }
+    .ll-name {
+      color: var(--white);
+      font-family: var(--serif);
+      font-size: clamp(22px, 2vw, 34px);
+      line-height: .95;
+    }
+    .ll-code {
+      margin-top: 6px;
+      color: rgba(247, 242, 233, .5);
+      font-family: var(--mono);
+      font-size: 9px;
+      letter-spacing: .12em;
+    }
+    .ll-cta {
+      display: inline-block;
+      margin-top: 12px;
+      border: .5px solid rgba(247, 242, 233, .32);
+      border-radius: 999px;
+      padding: 5px 14px;
+      color: rgba(247, 242, 233, .7);
+      font-family: var(--mono);
+      font-size: 8px;
+      letter-spacing: .18em;
+      text-transform: uppercase;
+      opacity: 0;
+      transform: translateY(6px);
+      transition: opacity .24s ease, transform .24s ease;
+    }
+    .look-slot:hover .ll-cta,
+    .look-slot:focus-visible .ll-cta {
+      opacity: 1;
+      transform: translateY(0);
+    }
+    .look-slot::after {
+      content: "";
+      position: absolute;
+      top: 20%;
+      bottom: 0;
+      right: 0;
+      width: .5px;
+      background: rgba(247, 242, 233, .08);
+      pointer-events: none;
+    }
+    .look-slot:last-child::after { display: none; }
+    .stage-hint {
+      position: absolute;
+      left: 50%;
+      bottom: 16px;
+      transform: translateX(-50%);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: rgba(247, 242, 233, .26);
+      font-family: var(--mono);
+      font-size: 8px;
+      letter-spacing: .2em;
+      text-transform: uppercase;
+    }
+    .hint-line {
+      width: 30px;
+      height: .5px;
+      background: rgba(247, 242, 233, .18);
+    }
+
+    .detail {
+      background: var(--bg);
+      overflow: hidden;
+    }
+    .detail-topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      height: 54px;
+      padding: 0 32px;
+      border-bottom: .5px solid var(--border);
+      background: var(--bg);
+      flex-shrink: 0;
+      z-index: 10;
+    }
+    .topbar-left {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      min-width: 0;
+    }
+    .back-btn,
+    .nav-pill,
+    .panel-tab,
+    .shortlist-fab,
+    .modal-btn,
+    .note-add-btn,
+    .lightbox-close { cursor: pointer; }
+    .back-btn {
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 9px;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+      transition: color .16s ease;
+    }
+    .back-btn:hover,
+    .back-btn:focus-visible {
+      color: var(--ink);
+      outline: none;
+    }
+    .topbar-brand {
+      color: var(--accent);
+      font-family: var(--serif);
+      font-size: 20px;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    .topbar-season {
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 9px;
+      letter-spacing: .16em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    .style-nav {
+      display: flex;
+      gap: 6px;
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+    .style-nav::-webkit-scrollbar { display: none; }
+    .nav-pill {
+      border: .5px solid var(--border);
+      border-radius: 999px;
+      background: transparent;
+      color: var(--muted);
+      padding: 5px 13px;
+      font-family: var(--mono);
+      font-size: 9px;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      white-space: nowrap;
+      transition: all .16s ease;
+    }
+    .nav-pill:hover,
+    .nav-pill:focus-visible {
+      border-color: var(--ink-2);
+      color: var(--ink-2);
+      outline: none;
+    }
+    .nav-pill.active {
+      background: var(--ink);
+      color: var(--bg);
+      border-color: var(--ink);
+    }
+    .detail-body {
+      flex: 1;
+      display: block;
+      min-height: 0;
+      overflow: hidden;
+      position: relative;
+    }
+    .detail-track-inner {
+      height: 100%;
+      display: flex;
+      transition: transform .34s var(--ease);
+      will-change: transform;
+    }
+    .detail-slide {
+      flex: 0 0 100%;
+      min-width: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 450px;
+      min-height: 0;
+    }
+    .detail-hero {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      border-right: .5px solid var(--border);
+      background: var(--bg-2);
+      cursor: zoom-in;
+    }
+    .hero-photo {
+      height: 100%;
+      max-height: calc(100vh - 54px);
+      width: auto;
+      max-width: 100%;
+      object-fit: contain;
+      transition: opacity .26s ease, transform .26s ease;
+    }
+    .hero-photo.out {
+      opacity: .15;
+      transform: scale(.985);
+    }
+    .badge {
+      position: absolute;
+      top: 20px;
+      border-radius: 999px;
+      padding: 5px 12px;
+      font-family: var(--mono);
+      font-size: 8px;
+      letter-spacing: .16em;
+      text-transform: uppercase;
+    }
+    .badge.primary {
+      left: 20px;
+      background: var(--accent);
+      color: var(--white);
+    }
+    .badge.secondary {
+      right: 20px;
+      border: .5px solid var(--border);
+      background: var(--bg);
+      color: var(--ink-2);
+    }
+    .detail-panel {
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      overflow-y: auto;
+      scrollbar-width: thin;
+      scrollbar-color: var(--border) transparent;
+    }
+    .panel-tabs {
+      display: flex;
+      border-bottom: .5px solid var(--border);
+      flex-shrink: 0;
+    }
+    .panel-tab {
+      border: 0;
+      border-bottom: 2px solid transparent;
+      background: transparent;
+      color: var(--muted);
+      padding: 13px 20px 11px;
+      font-family: var(--mono);
+      font-size: 9px;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+      transition: all .15s ease;
+    }
+    .panel-tab:hover,
+    .panel-tab:focus-visible {
+      color: var(--ink-2);
+      outline: none;
+    }
+    .panel-tab.active {
+      color: var(--ink);
+      border-bottom-color: var(--accent);
+    }
+    .panel-content {
+      display: none;
+      flex: 1;
+      overflow-y: auto;
+    }
+    .panel-content.active { display: block; }
+    .overview-head { padding: 24px 24px 0; }
+    .style-code {
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 9px;
+      letter-spacing: .2em;
+      text-transform: uppercase;
+    }
+    .style-name {
+      margin: 5px 0 4px;
+      color: var(--ink);
+      font-family: var(--serif);
+      font-size: 38px;
+      line-height: 1;
+    }
+    .style-fit {
+      color: var(--accent);
+      font-size: 12px;
+      letter-spacing: .06em;
+    }
+    .desc {
+      margin-top: 20px;
+      padding: 16px 24px;
+      border-top: .5px solid var(--border);
+      border-bottom: .5px solid var(--border);
+      color: var(--ink-2);
+      font-size: 12px;
+      line-height: 1.75;
+    }
+    .specs-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      border-bottom: .5px solid var(--border);
+    }
+    .spec-cell {
+      padding: 14px 24px;
+      border-right: .5px solid var(--border);
+      border-bottom: .5px solid var(--border);
+    }
+    .spec-cell:nth-child(even) { border-right: 0; }
+    .spec-label {
+      margin-bottom: 4px;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 8px;
+      letter-spacing: .16em;
+      text-transform: uppercase;
+    }
+    .spec-value {
+      color: var(--ink);
+      font-size: 13px;
+      font-weight: 560;
+    }
+    .tag-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+      padding: 20px 24px;
+      list-style: none;
+    }
+    .tag-list li {
+      border: .5px solid var(--border);
+      border-radius: 999px;
+      background: var(--bg-2);
+      color: var(--ink-2);
+      padding: 5px 10px;
+      font-family: var(--mono);
+      font-size: 9px;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .source-link {
+      display: block;
+      margin: 0 24px 22px;
+      border: .5px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface);
+      color: var(--ink);
+      padding: 12px 14px;
+      font-family: var(--mono);
+      font-size: 9px;
+      letter-spacing: .12em;
+      text-align: center;
+      text-decoration: none;
+      text-transform: uppercase;
+      transition: all .16s ease;
+    }
+    .source-link:hover,
+    .source-link:focus-visible {
+      border-color: var(--accent);
+      color: var(--accent);
+      outline: none;
+    }
+    .gallery-panel {
+      padding: 20px 24px;
+      display: grid;
+      gap: 10px;
+    }
+    .thumb {
+      border: .5px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      background: var(--bg-2);
+      cursor: zoom-in;
+    }
+    .thumb img {
+      width: 100%;
+      aspect-ratio: 3 / 4;
+      object-fit: cover;
+      transition: transform .28s ease;
+    }
+    .thumb:hover img { transform: scale(1.035); }
+    .notes-panel { padding: 20px 24px; }
+    .note-area {
+      width: 100%;
+      min-height: 84px;
+      resize: vertical;
+      border: .5px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--bg-2);
+      color: var(--ink);
+      outline: none;
+      padding: 10px 12px;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    .note-area:focus { border-color: var(--accent); }
+    .note-add-btn {
+      width: 100%;
+      margin-top: 10px;
+      border: 0;
+      border-radius: var(--radius);
+      background: var(--accent);
+      color: var(--white);
+      padding: 10px;
+      font-family: var(--mono);
+      font-size: 9px;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+    }
+    .shortlist-fab {
+      position: fixed;
+      right: 24px;
+      bottom: 24px;
+      z-index: 50;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      border: 0;
+      border-radius: 999px;
+      background: var(--ink);
+      color: var(--bg);
+      padding: 12px 20px;
+      box-shadow: 0 12px 32px rgba(37,35,31,.2);
+      font-family: var(--mono);
+      font-size: 9px;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+      transition: all .2s ease;
+    }
+    .shortlist-fab:hover,
+    .shortlist-fab:focus-visible {
+      background: var(--accent);
+      transform: translateY(-2px);
+      outline: none;
+    }
+    .shortlist-count {
+      display: none;
+      align-items: center;
+      justify-content: center;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: var(--accent);
+      color: var(--white);
+      font-size: 9px;
+    }
+    .shortlist-count.on { display: flex; }
+    .lightbox {
+      position: fixed;
+      inset: 0;
+      z-index: 200;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      background: rgba(37,35,31,.9);
+      cursor: zoom-out;
+    }
+    .lightbox.open { display: flex; }
+    .lightbox img {
+      max-width: 92vw;
+      max-height: 92vh;
+      object-fit: contain;
+      border-radius: 3px;
+    }
+    .lightbox-close {
+      position: fixed;
+      top: 20px;
+      right: 24px;
+      width: 36px;
+      height: 36px;
+      border: .5px solid rgba(247,242,233,.28);
+      border-radius: 50%;
+      background: rgba(247,242,233,.12);
+      color: var(--white);
+      font-size: 18px;
+    }
+    .overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 150;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      background: rgba(37,35,31,.5);
+      backdrop-filter: blur(2px);
+    }
+    .overlay.open { display: flex; }
+    .modal {
+      width: min(520px, calc(100vw - 32px));
+      max-height: 78vh;
+      overflow-y: auto;
+      border-radius: 12px;
+      background: var(--bg);
+      padding: 30px;
+      box-shadow: 0 24px 70px rgba(37,35,31,.24);
+    }
+    .modal-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 18px;
+    }
+    .modal-title {
+      font-family: var(--serif);
+      font-size: 24px;
+    }
+    .modal-close {
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      font-size: 22px;
+      cursor: pointer;
+    }
+    .shortlist-entry {
+      padding: 14px 0;
+      border-bottom: .5px solid var(--border);
+    }
+    .shortlist-look {
+      margin-bottom: 5px;
+      color: var(--ink-2);
+      font-family: var(--mono);
+      font-size: 10px;
+      letter-spacing: .06em;
+    }
+    .shortlist-note {
+      color: var(--ink);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+    .shortlist-empty {
+      padding: 24px;
+      color: var(--muted);
+      font-size: 12px;
+      text-align: center;
+    }
+    .modal-actions {
+      display: flex;
+      gap: 10px;
+      margin-top: 18px;
+    }
+    .modal-btn {
+      flex: 1;
+      border: .5px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--bg-2);
+      color: var(--ink-2);
+      padding: 10px;
+      font-family: var(--mono);
+      font-size: 9px;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+    .modal-btn.primary {
+      background: var(--ink);
+      border-color: var(--ink);
+      color: var(--bg);
+    }
+    .pdf-export-btn {
+      position: fixed;
+      top: 14px;
+      right: 18px;
+      z-index: 80;
+      border: .5px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--bg);
+      color: var(--ink);
+      padding: 9px 12px;
+      font-family: var(--mono);
+      font-size: 9px;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+      cursor: pointer;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        transition-duration: .01ms !important;
+        animation-duration: .01ms !important;
+        animation-iteration-count: 1 !important;
+      }
+    }
+    @media (max-width: 920px) {
+      html, body { overflow: auto; height: auto; }
+      .screen { position: static; min-height: 100vh; }
+      .stage.active { display: block; }
+      .looks-row {
+        height: auto;
+        min-height: 100vh;
+        display: grid;
+        grid-template-columns: 1fr;
+        padding: 90px 18px 60px;
+        gap: 10px;
+      }
+      .stage-header {
+        position: fixed;
+        padding: 18px;
+        background: linear-gradient(to bottom, rgba(37,35,31,.92), rgba(37,35,31,0));
+      }
+      .look-slot,
+      .look-slot:hover,
+      .look-slot:focus-visible {
+        max-width: none;
+        width: 100%;
+        flex: none;
+      }
+      .look-img-wrap { height: 62vh; }
+      .look-img { height: 100%; }
+      .look-slot::after,
+      .stage-hint,
+      .topbar-season { display: none; }
+      .detail-body {
+        overflow: hidden;
+      }
+      .detail-track-inner {
+        height: auto;
+      }
+      .detail-slide {
+        grid-template-columns: 1fr;
+        min-height: auto;
+      }
+      .detail-hero {
+        min-height: calc(100vh - 54px);
+        border-right: 0;
+        border-bottom: .5px solid var(--border);
+      }
+      .detail-panel { overflow: visible; }
+      .style-nav { max-width: 52vw; }
+      .shortlist-fab {
+        right: 14px;
+        bottom: 14px;
+      }
+    }
+    @media print {
+      html, body {
+        height: auto;
+        overflow: visible;
+        background: #fff !important;
+        color: #111;
+      }
+      .screen {
+        position: static;
+        display: block !important;
+      }
+      .stage,
+      .detail-topbar,
+      .shortlist-fab,
+      .overlay,
+      .lightbox,
+      .pdf-export-btn {
+        display: none !important;
+      }
+      .detail-body { display: block; }
+      .detail-slide { display: block; }
+      .detail-hero,
+      .detail-panel,
+      .panel-content {
+        display: block !important;
+        overflow: visible;
+      }
+    }
+  </style>
+</head>
+<body>
+  <button class="pdf-export-btn" type="button" onclick="window.print()">Export PDF</button>
+
+  <section class="screen stage active" id="screenStage" aria-label="Lookbook stage">
+    <header class="stage-header">
+      <div>
+        <div class="stage-brand">{{brand_label}}</div>
+        <div class="stage-title">{{page_title}}</div>
+      </div>
+      <div class="stage-season">{{season_label}} | {{generated_date}}</div>
+    </header>
+    <div class="looks-row" id="looksRow"></div>
+    <div class="stage-hint"><div class="hint-line"></div>Click any look to explore<div class="hint-line"></div></div>
+  </section>
+
+  <section class="screen detail" id="screenDetail" aria-label="Look detail">
+    <header class="detail-topbar">
+      <div class="topbar-left">
+        <button class="back-btn" type="button" id="backBtn">Back</button>
+        <div style="width:.5px;height:16px;background:var(--border)"></div>
+        <div class="topbar-brand">{{brand_label}}</div>
+      </div>
+      <nav class="style-nav" id="styleNav" aria-label="Look navigation"></nav>
+      <div class="topbar-season">{{season_label}}</div>
+    </header>
+
+    <div class="detail-body" id="detailTrack" aria-label="Product detail carousel">
+      <div class="detail-track-inner" id="detailTrackInner"></div>
+    </div>
+  </section>
+
+  <button class="shortlist-fab" type="button" id="shortlistBtn">
+    Shortlist <span class="shortlist-count" id="shortlistCount">0</span>
+  </button>
+
+  <div class="lightbox" id="lightbox">
+    <button class="lightbox-close" id="lightboxClose" type="button">x</button>
+    <img id="lightboxImage" src="" alt="Preview" />
+  </div>
+
+  <div class="overlay" id="shortlistOverlay">
+    <div class="modal">
+      <div class="modal-head">
+        <div class="modal-title">Buyer Shortlist</div>
+        <button class="modal-close" id="modalClose" type="button">x</button>
+      </div>
+      <div id="shortlistList"></div>
+      <div class="modal-actions">
+        <button class="modal-btn" id="clearShortlistBtn" type="button">Clear</button>
+        <button class="modal-btn primary" type="button" onclick="window.print()">Export PDF</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const LOOKBOOK_ITEMS = {{lookbook_items_json}};
+
+    (() => {
+      const items = Array.isArray(LOOKBOOK_ITEMS) ? LOOKBOOK_ITEMS : [];
+      let currentIndex = 0;
+      const shortlist = [];
+
+      const stage = document.getElementById('screenStage');
+      const detail = document.getElementById('screenDetail');
+      const looksRow = document.getElementById('looksRow');
+      const styleNav = document.getElementById('styleNav');
+      const detailTrack = document.getElementById('detailTrack');
+      const detailTrackInner = document.getElementById('detailTrackInner');
+      const backBtn = document.getElementById('backBtn');
+      const shortlistBtn = document.getElementById('shortlistBtn');
+      const shortlistCount = document.getElementById('shortlistCount');
+      const shortlistOverlay = document.getElementById('shortlistOverlay');
+      const shortlistList = document.getElementById('shortlistList');
+      const modalClose = document.getElementById('modalClose');
+      const clearShortlistBtn = document.getElementById('clearShortlistBtn');
+      const lightbox = document.getElementById('lightbox');
+      const lightboxImage = document.getElementById('lightboxImage');
+      const lightboxClose = document.getElementById('lightboxClose');
+
+      const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      })[char]);
+      const mainImage = (item) => Array.isArray(item.images) && item.images.length ? item.images[0] : '';
+      const compactCode = (item, index) => item.code || item.sku || String(index + 1).padStart(2, '0');
+      const compactKicker = (item) => item.fit || item.category || item.status || '';
+      const pageSubtitle = {{page_subtitle_json}};
+      const setCurrentIndex = (index) => {
+        if (!items.length) return;
+        currentIndex = (index + items.length) % items.length;
+        styleNav.querySelectorAll('.nav-pill').forEach((pill) => {
+          pill.classList.toggle('active', Number(pill.dataset.index || 0) === currentIndex);
+        });
+      };
+      const scrollToItem = (index, behavior = 'smooth') => {
+        if (!detailTrackInner || !items.length) return;
+        const nextIndex = (index + items.length) % items.length;
+        const slide = detailTrackInner.querySelector(`[data-slide-index="${nextIndex}"]`);
+        if (!slide) return;
+        detailTrackInner.style.transitionDuration = behavior === 'auto' ? '0ms' : '';
+        detailTrackInner.style.transform = `translateX(${-nextIndex * 100}%)`;
+        if (behavior === 'auto') {
+          window.setTimeout(() => {
+            detailTrackInner.style.transitionDuration = '';
+          }, 0);
+        }
+        setCurrentIndex(nextIndex);
+      };
+
+      const openLightbox = (src, alt) => {
+        if (!src || !lightbox || !lightboxImage) return;
+        lightboxImage.src = src;
+        lightboxImage.alt = alt || 'Preview';
+        lightbox.classList.add('open');
+      };
+
+      const renderStage = () => {
+        const preferredItems = items
+          .map((item, index) => ({ item, index }))
+          .filter(({ item }) => item && item.featureOnStage !== false);
+        const stageItems = (preferredItems.length ? preferredItems : items.map((item, index) => ({ item, index }))).slice(0, 5);
+
+        looksRow.innerHTML = stageItems.map(({ item, index }) => {
+          const img = mainImage(item);
+          return `
+            <button class="look-slot" type="button" data-index="${index}">
+              <div class="look-img-wrap">
+                ${img ? `<img class="look-img" src="${escapeHtml(img)}" alt="${escapeHtml(item.name || 'Look')}" loading="lazy" />` : ''}
+                <div class="look-grad"></div>
+              </div>
+              <div class="look-label">
+                <div class="ll-kicker">${escapeHtml(compactKicker(item))}</div>
+                <div class="ll-name">${escapeHtml(item.name || 'Untitled Look')}</div>
+                <div class="ll-code">${escapeHtml(compactCode(item, index))}</div>
+                <div class="ll-cta">View Details</div>
+              </div>
+            </button>
+          `;
+        }).join('');
+        looksRow.querySelectorAll('.look-slot').forEach((slot) => {
+          slot.addEventListener('click', () => openDetail(Number(slot.dataset.index || 0)));
+        });
+      };
+
+      const renderNav = () => {
+        styleNav.innerHTML = items.map((item, index) => `
+          <button class="nav-pill${index === currentIndex ? ' active' : ''}" type="button" data-index="${index}">
+            ${escapeHtml(item.shortName || item.name || compactCode(item, index))}
+          </button>
+        `).join('');
+        styleNav.querySelectorAll('.nav-pill').forEach((pill) => {
+          pill.addEventListener('click', () => scrollToItem(Number(pill.dataset.index || 0)));
+        });
+      };
+
+      const specsHtml = (item) => {
+        const specs = [
+          ['Category', item.category],
+          ['Price', item.price],
+          ['Fit', item.fit],
+          ['Status', item.status],
+          ['Material', item.material],
+          ['Season', item.season]
+        ].filter(([, value]) => value);
+        return specs.map(([label, value]) => `
+          <div class="spec-cell">
+            <div class="spec-label">${escapeHtml(label)}</div>
+            <div class="spec-value">${escapeHtml(value)}</div>
+          </div>
+        `).join('');
+      };
+
+      const tagsHtml = (item) => {
+        const tags = [
+          ...(Array.isArray(item.colors) ? item.colors : []),
+          ...(Array.isArray(item.tags) ? item.tags : [])
+        ].filter(Boolean);
+        return tags.map((tag) => `<li>${escapeHtml(tag)}</li>`).join('');
+      };
+
+      const galleryHtml = (item) => {
+        const images = Array.isArray(item.images) ? item.images : [];
+        return images.map((src, index) => `
+          <button class="thumb" type="button" data-src="${escapeHtml(src)}">
+            <img src="${escapeHtml(src)}" alt="${escapeHtml(item.name || 'Look')} image ${index + 1}" loading="lazy" />
+          </button>
+        `).join('');
+      };
+
+      const slideHtml = (item, index) => {
+        const img = mainImage(item);
+        const desc = item.description || pageSubtitle || '';
+        const tags = tagsHtml(item);
+        const source = item.link || img;
+        return `
+          <section class="detail-slide" data-slide-index="${index}" aria-label="${escapeHtml(item.name || 'Product')}">
+            <div class="detail-hero" data-action="lightbox" data-src="${escapeHtml(img)}" data-alt="${escapeHtml(item.name || 'Look image')}">
+              <div class="badge primary"${compactKicker(item) ? '' : ' style="display:none"'}>${escapeHtml(compactKicker(item))}</div>
+              <div class="badge secondary"${(item.status || item.price) ? '' : ' style="display:none"'}>${escapeHtml(item.status || item.price || '')}</div>
+              ${img ? `<img class="hero-photo" src="${escapeHtml(img)}" alt="${escapeHtml(item.name || 'Look image')}" loading="eager" />` : ''}
+            </div>
+
+            <aside class="detail-panel">
+              <div class="panel-tabs" role="tablist">
+                <button class="panel-tab active" type="button" data-tab="overview">Overview</button>
+                <button class="panel-tab" type="button" data-tab="gallery">Images</button>
+                <button class="panel-tab" type="button" data-tab="notes">Notes</button>
+              </div>
+
+              <div class="panel-content active" data-panel="overview">
+                <div class="overview-head">
+                  <div class="style-code">${escapeHtml(compactCode(item, index))}</div>
+                  <h1 class="style-name">${escapeHtml(item.name || 'Untitled Look')}</h1>
+                  <div class="style-fit">${escapeHtml(item.fit || item.category || '')}</div>
+                </div>
+                <p class="desc"${desc ? '' : ' style="display:none"'}>${escapeHtml(desc)}</p>
+                <div class="specs-grid">${specsHtml(item)}</div>
+                <ul class="tag-list"${tags ? '' : ' style="display:none"'}>${tags}</ul>
+                ${source ? `<a class="source-link" href="${escapeHtml(source)}" target="_blank" rel="noreferrer">Open Source</a>` : ''}
+              </div>
+
+              <div class="panel-content" data-panel="gallery">
+                <div class="gallery-panel">${galleryHtml(item)}</div>
+              </div>
+
+              <div class="panel-content" data-panel="notes">
+                <div class="notes-panel">
+                  <textarea class="note-area" placeholder="Buyer notes, quantities, color comments"></textarea>
+                  <button class="note-add-btn" type="button" data-index="${index}">Add To Shortlist</button>
+                </div>
+              </div>
+            </aside>
+          </section>
+        `;
+      };
+
+      const renderDetails = () => {
+        if (!detailTrack || !detailTrackInner) return;
+        detailTrackInner.innerHTML = items.map(slideHtml).join('');
+        renderNav();
+        detailTrackInner.querySelectorAll('.panel-tab').forEach((tab) => {
+          tab.addEventListener('click', () => switchTab(tab.closest('.detail-slide'), tab.dataset.tab));
+        });
+        detailTrackInner.querySelectorAll('[data-action="lightbox"]').forEach((hero) => {
+          hero.addEventListener('click', () => openLightbox(hero.dataset.src, hero.dataset.alt));
+        });
+        detailTrackInner.querySelectorAll('.thumb').forEach((thumb) => {
+          thumb.addEventListener('click', () => openLightbox(thumb.dataset.src, thumb.querySelector('img')?.alt));
+        });
+        detailTrackInner.querySelectorAll('.note-add-btn').forEach((button) => {
+          button.addEventListener('click', () => addToShortlist(Number(button.dataset.index || 0), button.closest('.notes-panel')?.querySelector('.note-area')));
+        });
+        detailTrack.addEventListener('wheel', (event) => {
+          if (!detail.classList.contains('active')) return;
+          if (document.activeElement && ['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName)) return;
+          const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+          if (Math.abs(delta) < 18) return;
+          event.preventDefault();
+          switchItem(currentIndex + (delta > 0 ? 1 : -1));
+        }, { passive: false });
+      };
+
+      const openDetail = (index) => {
+        stage.classList.remove('active');
+        detail.classList.add('active');
+        scrollToItem(index, 'auto');
+      };
+      const goBack = () => {
+        detail.classList.remove('active');
+        stage.classList.add('active');
+      };
+      const switchItem = (index) => {
+        if (!items.length) return;
+        scrollToItem(index);
+      };
+      const switchTab = (slide, name) => {
+        if (!slide) return;
+        slide.querySelectorAll('.panel-tab').forEach((tab) => {
+          tab.classList.toggle('active', tab.dataset.tab === name);
+        });
+        slide.querySelectorAll('.panel-content').forEach((panel) => {
+          panel.classList.toggle('active', panel.dataset.panel === name);
+        });
+      };
+      const addToShortlist = (index = currentIndex, noteInput) => {
+        const item = items[index];
+        if (!item) return;
+        shortlist.push({
+          code: compactCode(item, index),
+          name: item.name || 'Untitled Look',
+          note: noteInput?.value.trim() || 'Selected'
+        });
+        if (noteInput) noteInput.value = '';
+        updateShortlist();
+      };
+      const updateShortlist = () => {
+        shortlistCount.textContent = String(shortlist.length);
+        shortlistCount.classList.toggle('on', shortlist.length > 0);
+      };
+      const openShortlist = () => {
+        shortlistList.innerHTML = shortlist.length
+          ? shortlist.map((entry, index) => `
+              <div class="shortlist-entry">
+                <div class="shortlist-look">${String(index + 1).padStart(2, '0')} | ${escapeHtml(entry.code)} ${escapeHtml(entry.name)}</div>
+                <div class="shortlist-note">${escapeHtml(entry.note)}</div>
+              </div>
+            `).join('')
+          : '<div class="shortlist-empty">No looks shortlisted yet.</div>';
+        shortlistOverlay.classList.add('open');
+      };
+
+      if (backBtn) backBtn.addEventListener('click', goBack);
+      if (lightboxClose) lightboxClose.addEventListener('click', () => lightbox.classList.remove('open'));
+      if (lightbox) lightbox.addEventListener('click', (event) => {
+        if (event.target === lightbox) lightbox.classList.remove('open');
+      });
+      if (shortlistBtn) shortlistBtn.addEventListener('click', openShortlist);
+      if (modalClose) modalClose.addEventListener('click', () => shortlistOverlay.classList.remove('open'));
+      if (shortlistOverlay) shortlistOverlay.addEventListener('click', (event) => {
+        if (event.target === shortlistOverlay) shortlistOverlay.classList.remove('open');
+      });
+      if (clearShortlistBtn) clearShortlistBtn.addEventListener('click', () => {
+        shortlist.length = 0;
+        updateShortlist();
+        openShortlist();
+      });
+      document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') {
+          if (lightbox.classList.contains('open')) lightbox.classList.remove('open');
+          else if (shortlistOverlay.classList.contains('open')) shortlistOverlay.classList.remove('open');
+          else if (detail.classList.contains('active')) goBack();
+        }
+        if (!detail.classList.contains('active')) return;
+        if (document.activeElement && ['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName)) return;
+        if (event.key === 'ArrowLeft') switchItem(currentIndex - 1);
+        if (event.key === 'ArrowRight') switchItem(currentIndex + 1);
+      });
+
+      renderStage();
+      renderDetails();
+      updateShortlist();
+    })();
+  </script>
+</body>
+</html>

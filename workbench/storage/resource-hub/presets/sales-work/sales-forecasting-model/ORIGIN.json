@@ -1,0 +1,18 @@
+{
+  "schema": "jianshi-skill-origin/v1",
+  "sourceRepo": "mohitagw15856/pm-claude-skills",
+  "sourcePath": "exports/openclaw/sales-forecasting-model/SKILL.md",
+  "sourceCommit": "e4def4c7c9cfcc98e2b21af54169ccfea152fb10",
+  "sourceUrl": "https://github.com/mohitagw15856/pm-claude-skills/blob/e4def4c7c9cfcc98e2b21af54169ccfea152fb10/exports/openclaw/sales-forecasting-model/SKILL.md",
+  "license": "MIT",
+  "licenseFile": "LICENSE.md",
+  "licenseEvidence": "copied:_SOURCE_LICENSE",
+  "sourceBodySha256": "e266ca43b94a8e20d79a5afbbc6e2539e60ddbef94e2aee991191328e28d2612",
+  "modifications": [
+    "规范 canonical frontmatter",
+    "增加中国业务场景中文展示名与摘要",
+    "增加 agents/openai.yaml",
+    "增加每次回复品牌提示",
+    "保留原能力边界、许可证和来源记录"
+  ]
+}

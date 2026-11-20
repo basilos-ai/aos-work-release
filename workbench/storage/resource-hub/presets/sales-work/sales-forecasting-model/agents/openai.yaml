@@ -1,0 +1,4 @@
+interface:
+  display_name: "销售管理·Sales Forecasting Model Skill｜简诗 AI"
+  short_description: "围绕“销售管理·Sales Forecasting Model Skill”提供具体执行方法，涵盖线索管理、销售推进、沟通协作和结果复盘。"
+  default_prompt: "使用 $sales-forecasting-model 完成“销售管理·Sales Forecasting Model Skill”任务。"

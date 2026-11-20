@@ -1,0 +1,731 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{page_title}}</title>
+  <style>
+    :root {
+      --ink: #211f1b;
+      --paper: #f3efe7;
+      --warm: #c8b89d;
+      --line: rgba(33, 31, 27, 0.16);
+      --muted: #766f64;
+      --white: #fffaf2;
+      --shadow: 0 22px 70px rgba(20, 18, 14, 0.14);
+      --radius: 8px;
+      --max: 1560px;
+      --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+      --serif: Georgia, "Times New Roman", serif;
+      --ease: cubic-bezier(.4, 0, .2, 1);
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font-family: var(--sans);
+      overflow-x: hidden;
+    }
+    body.locked { overflow: hidden; }
+    a { color: inherit; text-decoration: none; }
+    button { font: inherit; color: inherit; }
+    img, video { display: block; max-width: 100%; }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 40;
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
+      gap: 20px;
+      padding: 15px clamp(18px, 3vw, 42px);
+      border-bottom: 1px solid rgba(255, 250, 242, 0.2);
+      background: rgba(33, 31, 27, 0.9);
+      color: var(--white);
+      backdrop-filter: blur(14px);
+    }
+    .nav {
+      display: flex;
+      gap: clamp(14px, 2.2vw, 30px);
+      align-items: center;
+      font-size: 11px;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+    }
+    .nav:last-child { justify-content: flex-end; }
+    .brand {
+      font-family: var(--serif);
+      font-size: clamp(24px, 3vw, 42px);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      text-align: center;
+      white-space: nowrap;
+    }
+    .utility {
+      border: 1px solid rgba(255, 250, 242, 0.38);
+      border-radius: 999px;
+      padding: 8px 13px;
+    }
+
+    .hero {
+      position: relative;
+      min-height: min(860px, calc(100vh - 60px));
+      display: grid;
+      place-items: end center;
+      isolation: isolate;
+      overflow: hidden;
+      background: #171612;
+      color: var(--white);
+    }
+    .media-frame {
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+      background:
+        linear-gradient(135deg, #2b2923, #7a6e5d 46%, #1d1b18);
+    }
+    .media-frame::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background:
+        linear-gradient(to bottom, rgba(0,0,0,.18), rgba(0,0,0,.04) 34%, rgba(0,0,0,.68)),
+        radial-gradient(circle at 50% 25%, rgba(255,255,255,.10), transparent 42%);
+      pointer-events: none;
+    }
+    .media-frame video,
+    .media-frame img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      object-position: center;
+      filter: saturate(.9) contrast(1.02);
+    }
+    .media-frame.is-empty::before {
+      content: attr(data-empty-label);
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      color: rgba(255, 250, 242, 0.62);
+      font-size: 12px;
+      letter-spacing: 0.16em;
+      text-align: center;
+      text-transform: uppercase;
+      z-index: 1;
+    }
+    .copy {
+      position: relative;
+      z-index: 2;
+      width: min(980px, calc(100vw - 36px));
+      padding: 0 0 clamp(42px, 7vh, 82px);
+      text-align: center;
+      display: grid;
+      justify-items: center;
+      gap: 12px;
+    }
+    .eyebrow,
+    .kicker {
+      font-size: 11px;
+      letter-spacing: 0.17em;
+      text-transform: uppercase;
+    }
+    .eyebrow { color: rgba(255, 250, 242, 0.72); }
+    h1, h2, h3, p { margin: 0; }
+    h1 {
+      font-family: var(--serif);
+      font-size: clamp(52px, 10vw, 152px);
+      font-weight: 400;
+      line-height: 0.88;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+    h2 {
+      font-family: var(--serif);
+      font-size: clamp(34px, 6vw, 92px);
+      font-weight: 400;
+      line-height: 0.94;
+      letter-spacing: 0;
+    }
+    h3 {
+      font-family: var(--serif);
+      font-size: clamp(24px, 3vw, 42px);
+      font-weight: 400;
+      line-height: 1;
+      letter-spacing: 0;
+    }
+    .dek {
+      max-width: 620px;
+      color: rgba(255, 250, 242, 0.82);
+      font-size: 16px;
+      line-height: 1.65;
+    }
+    .actions {
+      display: flex;
+      justify-content: center;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 10px;
+    }
+    .cta {
+      border: 1px solid currentColor;
+      border-radius: 999px;
+      padding: 10px 18px;
+      background: rgba(255, 250, 242, 0.05);
+      color: inherit;
+      font-size: 11px;
+      letter-spacing: 0.13em;
+      text-transform: uppercase;
+      transition: background 180ms ease, transform 180ms ease;
+    }
+    .cta:hover,
+    .cta:focus-visible {
+      background: rgba(255, 250, 242, 0.18);
+      transform: translateY(-1px);
+      outline: none;
+    }
+
+    .page {
+      width: min(var(--max), calc(100vw - 40px));
+      margin: 0 auto;
+      padding-bottom: 90px;
+    }
+    .section {
+      padding: clamp(58px, 8vw, 118px) 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .split {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+    }
+    .story-card {
+      position: relative;
+      min-height: 680px;
+      overflow: hidden;
+      color: var(--white);
+      background: #24211c;
+    }
+    .story-card .media-frame { position: absolute; }
+    .story-card .copy {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      width: auto;
+      padding: 34px;
+      justify-items: start;
+      text-align: left;
+    }
+    .story-card .dek { max-width: 440px; }
+
+    .banner {
+      position: relative;
+      min-height: 620px;
+      overflow: hidden;
+      color: var(--white);
+      background: #27241e;
+    }
+    .banner .copy {
+      position: absolute;
+      left: clamp(24px, 8vw, 120px);
+      bottom: clamp(34px, 8vw, 96px);
+      width: min(560px, calc(100% - 48px));
+      padding: 0;
+      justify-items: start;
+      text-align: left;
+    }
+
+    .section-head {
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 24px;
+      margin-bottom: 22px;
+    }
+    .section-head p {
+      max-width: 460px;
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1.65;
+    }
+    .rail {
+      display: grid;
+      grid-auto-flow: column;
+      grid-auto-columns: minmax(250px, 23vw);
+      gap: 18px;
+      overflow-x: auto;
+      padding-bottom: 18px;
+      scroll-snap-type: x mandatory;
+    }
+    .tile {
+      position: relative;
+      min-height: 520px;
+      overflow: hidden;
+      scroll-snap-align: start;
+      background: #25231e;
+      color: var(--white);
+    }
+    .tile .media-frame { position: absolute; }
+    .tile-copy {
+      position: absolute;
+      left: 20px;
+      right: 20px;
+      bottom: 22px;
+      z-index: 2;
+    }
+    .tile-copy .kicker { color: rgba(255, 250, 242, 0.68); margin-bottom: 7px; }
+    .tile-copy h3 { font-size: clamp(25px, 2.4vw, 40px); }
+    .tile-copy .cta {
+      display: inline-flex;
+      margin-top: 14px;
+      padding: 8px 0;
+      border: 0;
+      border-bottom: 1px solid currentColor;
+      border-radius: 0;
+      background: transparent;
+    }
+
+    .notes {
+      display: grid;
+      grid-template-columns: 0.9fr 1.1fr;
+      gap: clamp(24px, 6vw, 90px);
+      align-items: start;
+    }
+    .notes p,
+    .notes li {
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1.75;
+    }
+    .notes ul {
+      margin: 0;
+      padding-left: 18px;
+    }
+
+    .toolbar {
+      position: fixed;
+      right: 18px;
+      bottom: 18px;
+      z-index: 50;
+      display: flex;
+      gap: 8px;
+    }
+    .icon-btn {
+      border: 1px solid rgba(255, 250, 242, 0.28);
+      border-radius: 999px;
+      padding: 10px 13px;
+      background: rgba(33, 31, 27, 0.88);
+      color: var(--white);
+      cursor: pointer;
+      box-shadow: var(--shadow);
+    }
+
+    @media (max-width: 900px) {
+      .topbar {
+        grid-template-columns: 1fr auto;
+      }
+      .nav:first-child { display: none; }
+      .nav:last-child { gap: 10px; font-size: 10px; }
+      .utility { padding: 7px 10px; }
+      .hero { min-height: 760px; }
+      .split,
+      .notes { grid-template-columns: 1fr; }
+      .story-card,
+      .banner { min-height: 620px; }
+      .story-card .copy,
+      .banner .copy {
+        left: 0;
+        right: 0;
+        bottom: 0;
+        width: auto;
+        padding: 28px;
+      }
+      .section-head {
+        display: grid;
+        align-items: start;
+      }
+      .rail { grid-auto-columns: minmax(250px, 82vw); }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      *, *::before, *::after {
+        animation-duration: .01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: .01ms !important;
+      }
+      video { animation: none !important; }
+    }
+
+    @media print {
+      body { background: #fff; color: #111; }
+      .topbar,
+      .toolbar,
+      video { display: none !important; }
+      .page { width: 100%; padding: 0; }
+      .hero,
+      .story-card,
+      .banner,
+      .tile {
+        min-height: auto;
+        color: #111;
+        background: #fff;
+        break-inside: avoid;
+      }
+      .media-frame {
+        position: relative !important;
+        aspect-ratio: 16 / 9;
+      }
+      .copy,
+      .story-card .copy,
+      .banner .copy,
+      .tile-copy {
+        position: relative;
+        color: #111;
+        padding: 20px 0;
+        left: auto;
+        right: auto;
+        bottom: auto;
+      }
+      .dek,
+      .eyebrow,
+      .kicker { color: #555; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <nav class="nav" aria-label="Primary categories">
+      <a href="#women"><!-- Example: Women --></a>
+      <a href="#men"><!-- Example: Men --></a>
+      <a href="#home"><!-- Example: Home --></a>
+      <a href="#explore"><!-- Example: Explore --></a>
+    </nav>
+    <a class="brand" href="#" data-brand-name><!-- Example: Brand Name --></a>
+    <nav class="nav" aria-label="Utility navigation">
+      <a href="#stores"><!-- Example: Stores --></a>
+      <a href="#search"><!-- Example: Search --></a>
+      <a class="utility" href="#shop"><!-- Example: Shop --></a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero" id="hero" aria-labelledby="hero-title">
+      <div class="media-frame" data-media-slot="hero" data-empty-label="Hero video or image slot"></div>
+      <div class="copy">
+        <div class="eyebrow" data-field="hero.eyebrow"><!-- Example: Seasonal Campaign --></div>
+        <h1 id="hero-title" data-field="hero.title"><!-- Example: Homepage Feature --></h1>
+        <p class="dek" data-field="hero.dek"><!-- Example: A cinematic opening module for the main campaign. Use video first, with a poster image or static image fallback. --></p>
+        <div class="actions" data-actions="hero"></div>
+      </div>
+    </section>
+
+    <div class="page">
+      <section class="section split" id="features" aria-label="Feature stories">
+        <article class="story-card">
+          <div class="media-frame" data-media-slot="featureA" data-empty-label="Feature video or image slot"></div>
+          <div class="copy">
+            <div class="eyebrow" data-field="featureA.eyebrow"><!-- Example: Category Story --></div>
+            <h2 data-field="featureA.title"><!-- Example: Editorial Feature --></h2>
+            <p class="dek" data-field="featureA.dek"><!-- Example: A flexible half-width module for a category, capsule, collaboration, or seasonal narrative. --></p>
+            <div class="actions" data-actions="featureA"></div>
+          </div>
+        </article>
+        <article class="story-card">
+          <div class="media-frame" data-media-slot="featureB" data-empty-label="Feature video or image slot"></div>
+          <div class="copy">
+            <div class="eyebrow" data-field="featureB.eyebrow"><!-- Example: Category Story --></div>
+            <h2 data-field="featureB.title"><!-- Example: Second Feature --></h2>
+            <p class="dek" data-field="featureB.dek"><!-- Example: Pair two video-led stories side by side on desktop and stack them cleanly on mobile. --></p>
+            <div class="actions" data-actions="featureB"></div>
+          </div>
+        </article>
+      </section>
+
+      <section class="section" id="campaign" aria-labelledby="campaign-title">
+        <article class="banner">
+          <div class="media-frame" data-media-slot="campaign" data-empty-label="Wide campaign video or image slot"></div>
+          <div class="copy">
+            <div class="eyebrow" data-field="campaign.eyebrow"><!-- Example: Campaign Banner --></div>
+            <h2 id="campaign-title" data-field="campaign.title"><!-- Example: Wide Story Module --></h2>
+            <p class="dek" data-field="campaign.dek"><!-- Example: A full-width block for shows, collaborations, launch films, or brand moments. --></p>
+            <div class="actions" data-actions="campaign"></div>
+          </div>
+        </article>
+      </section>
+
+      <section class="section" id="explore" aria-labelledby="explore-title">
+        <div class="section-head">
+          <div>
+            <div class="kicker" data-field="explore.eyebrow"><!-- Example: More To Explore --></div>
+            <h2 id="explore-title" data-field="explore.title"><!-- Example: Visual Navigation --></h2>
+          </div>
+          <p data-field="explore.dek"><!-- Example: Use this rail for collections, categories, product worlds, or content hubs. --></p>
+        </div>
+        <div class="rail" data-rail></div>
+      </section>
+
+      <section class="section notes" aria-label="Brand notes" data-notes-section>
+        <div>
+          <div class="kicker" data-field="notes.eyebrow"><!-- Example: Brand Notes --></div>
+          <h2 data-field="notes.title"><!-- Example: Brand Story --></h2>
+        </div>
+        <ul data-notes-list></ul>
+      </section>
+    </div>
+  </main>
+
+  <div class="toolbar" aria-label="Page tools">
+    <button class="icon-btn" type="button" onclick="window.print()" aria-label="Print or export PDF"><!-- Example: Print --></button>
+  </div>
+
+  <script>
+    const siteConfig = {{site_config_json}};
+    const defaultSiteConfig = {
+      // Example pageTitle: "Luxury Brand Homepage"
+      pageTitle: "",
+      // Example brandName: "Brand Name"
+      brandName: "",
+      hero: {
+        // Example eyebrow: "Seasonal Campaign"
+        eyebrow: "",
+        // Example title: "Homepage Feature"
+        title: "",
+        // Example dek: "A cinematic opening module for the main campaign."
+        dek: "",
+        media: {
+          video: "",
+          poster: "",
+          image: "",
+          // Example alt: "Hero campaign media"
+          alt: ""
+        },
+        // Example actions: [{ label: "Shop Now", href: "#shop" }]
+        actions: []
+      },
+      featureA: {
+        // Example eyebrow: "Category Story"
+        eyebrow: "",
+        // Example title: "Editorial Feature"
+        title: "",
+        // Example dek: "A flexible half-width module for a category, capsule, collaboration, or seasonal narrative."
+        dek: "",
+        media: {
+          video: "",
+          poster: "",
+          image: "",
+          // Example alt: "First editorial feature media"
+          alt: ""
+        },
+        // Example actions: [{ label: "Shop Now", href: "#shop" }]
+        actions: []
+      },
+      featureB: {
+        // Example eyebrow: "Category Story"
+        eyebrow: "",
+        // Example title: "Second Feature"
+        title: "",
+        // Example dek: "Pair two video-led stories side by side on desktop and stack them cleanly on mobile."
+        dek: "",
+        media: {
+          video: "",
+          poster: "",
+          image: "",
+          // Example alt: "Second editorial feature media"
+          alt: ""
+        },
+        // Example actions: [{ label: "Discover", href: "#explore" }]
+        actions: []
+      },
+      campaign: {
+        // Example eyebrow: "Campaign Banner"
+        eyebrow: "",
+        // Example title: "Wide Story Module"
+        title: "",
+        // Example dek: "A full-width block for shows, collaborations, launch films, or brand moments."
+        dek: "",
+        media: {
+          video: "",
+          poster: "",
+          image: "",
+          // Example alt: "Wide campaign media"
+          alt: ""
+        },
+        // Example actions: [{ label: "Watch Now", href: "#watch" }]
+        actions: []
+      },
+      rail: [
+        // Example rail item:
+        // {
+        //   eyebrow: "Collection",
+        //   title: "New Season",
+        //   cta: "Shop Now",
+        //   href: "#collection",
+        //   media: { video: "", poster: "", image: "", alt: "Collection media" }
+        // }
+      ],
+      explore: {
+        // Example eyebrow: "More To Explore"
+        eyebrow: "",
+        // Example title: "Visual Navigation"
+        title: "",
+        // Example dek: "Use this rail for collections, categories, product worlds, or content hubs."
+        dek: ""
+      },
+      notes: {
+        // Example eyebrow: "Brand Notes"
+        eyebrow: "",
+        // Example title: "Brand Story"
+        title: "",
+        items: [
+          // Example: "A concise proof point, value, or service highlight."
+        ]
+      }
+    };
+    const config = Object.assign({}, defaultSiteConfig, siteConfig || {});
+
+    function setText(selector, value) {
+      const element = document.querySelector(selector);
+      if (element && value) element.textContent = value;
+    }
+
+    function createMedia(media, slotLabel) {
+      const frame = document.createElement("div");
+      const data = media || {};
+      const hasVideo = typeof data.video === "string" && data.video.trim();
+      const hasImage = typeof data.image === "string" && data.image.trim();
+      const hasPoster = typeof data.poster === "string" && data.poster.trim();
+
+      if (hasVideo) {
+        const video = document.createElement("video");
+        video.src = data.video;
+        if (hasPoster) video.poster = data.poster;
+        video.muted = true;
+        video.loop = true;
+        video.autoplay = true;
+        video.playsInline = true;
+        video.setAttribute("aria-label", data.alt || slotLabel || "Video media");
+        frame.appendChild(video);
+      } else if (hasImage || hasPoster) {
+        const img = document.createElement("img");
+        img.src = hasImage ? data.image : data.poster;
+        img.alt = data.alt || slotLabel || "Image media";
+        frame.appendChild(img);
+      }
+      return frame;
+    }
+
+    function fillMediaSlot(slotName, data) {
+      const slot = document.querySelector(`[data-media-slot="${slotName}"]`);
+      if (!slot) return;
+      const mediaNode = createMedia(data && data.media, slot.getAttribute("data-empty-label"));
+      if (mediaNode.children.length) {
+        slot.replaceChildren(...Array.from(mediaNode.children));
+        slot.classList.remove("is-empty");
+      } else {
+        slot.classList.add("is-empty");
+      }
+    }
+
+    function fillActions(slotName, actions) {
+      const wrap = document.querySelector(`[data-actions="${slotName}"]`);
+      if (!wrap) return;
+      wrap.replaceChildren();
+      (actions || []).forEach((action) => {
+        if (!action || !action.label || !action.href) return;
+        const link = document.createElement("a");
+        link.className = "cta";
+        link.href = action.href;
+        link.textContent = action.label;
+        wrap.appendChild(link);
+      });
+    }
+
+    function applySection(key) {
+      const data = config[key] || {};
+      ["eyebrow", "title", "dek"].forEach((field) => {
+        setText(`[data-field="${key}.${field}"]`, data[field]);
+      });
+      fillMediaSlot(key, data);
+      fillActions(key, data.actions);
+    }
+
+    function renderRail() {
+      const rail = document.querySelector("[data-rail]");
+      if (!rail) return;
+      rail.replaceChildren();
+      (config.rail || []).forEach((item) => {
+        const article = document.createElement("article");
+        article.className = "tile";
+
+        const mediaFrame = document.createElement("div");
+        mediaFrame.className = "media-frame";
+        mediaFrame.setAttribute("data-empty-label", "Rail video or image slot");
+        const mediaNode = createMedia(item.media, item.title);
+        if (mediaNode.children.length) {
+          mediaFrame.append(...Array.from(mediaNode.children));
+        } else {
+          mediaFrame.classList.add("is-empty");
+        }
+
+        const copy = document.createElement("div");
+        copy.className = "tile-copy";
+
+        const eyebrow = document.createElement("div");
+        eyebrow.className = "kicker";
+        eyebrow.textContent = item.eyebrow || "";
+
+        const title = document.createElement("h3");
+        title.textContent = item.title || "";
+
+        copy.append(eyebrow, title);
+        if (item.cta && item.href) {
+          const link = document.createElement("a");
+          link.className = "cta";
+          link.href = item.href;
+          link.textContent = item.cta;
+          copy.appendChild(link);
+        }
+
+        article.append(mediaFrame, copy);
+        rail.appendChild(article);
+      });
+    }
+
+    function renderNotes() {
+      const section = document.querySelector("[data-notes-section]");
+      const list = document.querySelector("[data-notes-list]");
+      const notes = config.notes || {};
+      const items = Array.isArray(notes.items) ? notes.items.filter(Boolean) : [];
+      setText('[data-field="notes.eyebrow"]', notes.eyebrow);
+      setText('[data-field="notes.title"]', notes.title);
+      if (!section || !list) return;
+      if (!items.length) {
+        section.style.display = "none";
+        return;
+      }
+      list.replaceChildren();
+      items.forEach((item) => {
+        const li = document.createElement("li");
+        li.textContent = item;
+        list.appendChild(li);
+      });
+    }
+
+    document.addEventListener("DOMContentLoaded", () => {
+      setText("[data-brand-name]", config.brandName);
+      document.title = config.pageTitle || config.brandName || "";
+      ["hero", "featureA", "featureB", "campaign"].forEach(applySection);
+      applySection("explore");
+      renderRail();
+      renderNotes();
+    });
+  </script>
+</body>
+</html>
