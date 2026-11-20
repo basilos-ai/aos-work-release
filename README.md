@@ -4,10 +4,10 @@
 
 | 语言 / Language | 在线观看 / Watch | 视频 / MP4 | 字幕 / Captions |
 | --- | --- | --- | --- |
-| 中文 | [播放中文版 · 5 分 03 秒](https://basilos-ai.github.io/aos-work-release/) | [下载视频](https://basilos-ai.github.io/aos-work-release/media/aos-work-deployment.mp4?v=fd242173) | [中文字幕](https://basilos-ai.github.io/aos-work-release/media/aos-work-deployment.zh.vtt?v=fd242173) |
-| English | [Watch in English · 5 min 04 sec](https://basilos-ai.github.io/aos-work-release/en/) | [Download video](https://basilos-ai.github.io/aos-work-release/media/aos-work-deployment.en.mp4?v=b0915349) | [English captions](https://basilos-ai.github.io/aos-work-release/media/aos-work-deployment.en.vtt?v=b0915349) |
+| 中文 | [播放中文版 · 3 分 45 秒](https://basilos-ai.github.io/aos-work-release/) | [下载视频](https://basilos-ai.github.io/aos-work-release/media/aos-work-deployment.mp4?v=76a68a9f) | [中文字幕](https://basilos-ai.github.io/aos-work-release/media/aos-work-deployment.zh.vtt?v=76a68a9f) |
+| English | [Watch in English · 3 min 50 sec](https://basilos-ai.github.io/aos-work-release/en/) | [Download video](https://basilos-ai.github.io/aos-work-release/media/aos-work-deployment.en.mp4?v=dd69daf0) | [English captions](https://basilos-ai.github.io/aos-work-release/media/aos-work-deployment.en.vtt?v=dd69daf0) |
 
-[下载自动预检安装器](https://github.com/basilos-ai/aos-work-release/releases/download/v2026.11.20.3/deploy.sh)
+[下载自动预检安装器](https://github.com/basilos-ai/aos-work-release/releases/download/v2026.11.20.4/deploy.sh)
 
 ## 开始部署
 
@@ -21,4 +21,4 @@ sudo bash /home/aos-work/deploy.sh
 
 启动后先看 `Host preflight` 的 CPU、内存、磁盘和端口结果。主菜单依次选择 **1** 配置域名和 HTTPS、**2** 获取部署包、**3** 部署服务。完成后选择 **6** 查看容器状态。
 
-[版本说明与离线安装包](https://github.com/basilos-ai/aos-work-release/releases/tag/v2026.11.20.3)
+[版本说明与离线安装包](https://github.com/basilos-ai/aos-work-release/releases/tag/v2026.11.20.4)

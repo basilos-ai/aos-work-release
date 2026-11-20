@@ -4,30 +4,25 @@ WEBVTT
 Let’s deploy AOS Work on a single Linux server.
 
 00:00:03.500 --> 00:00:07.567
-Point your domains at the server.
-Open ports 80 and 443.
+Point your domains at the server. Open ports 80 and 443.
 
 00:00:07.733 --> 00:00:12.300
 Using local MinIO? You’ll need a storage domain, too.
 
 00:00:12.300 --> 00:00:15.967
-Download deploy.sh from the
-release linked in the guide.
+Download deploy.sh from the release linked in the guide.
 
 00:00:16.133 --> 00:00:19.900
-In Termius, upload the script
-to this folder using SFTP.
+In Termius, upload the script to this folder using SFTP.
 
 00:00:19.900 --> 00:00:25.533
-Open the server terminal and
-type the command you see here.
+Open the server terminal and type the command you see here.
 
 00:00:25.667 --> 00:00:27.900
 Press Enter to start the checks.
 
 00:00:27.900 --> 00:00:32.433
-The installer checks your processor,
-memory, and deployment disk.
+The installer checks your processor, memory, and deployment disk.
 
 00:00:32.633 --> 00:00:36.500
 Look at total capacity. You need a hundred gigabytes.
@@ -45,192 +40,157 @@ This server still needs Docker, Nginx, and Certbot.
 Type y, then press Enter to install the missing tools.
 
 00:00:53.700 --> 00:01:00.500
-See “Environment ready”? Now
-you can configure your domains.
+See “Environment ready”? Now you can configure your domains.
 
-00:01:00.500 --> 00:01:05.167
-Choose one in the main menu
-to set up domains and HTTPS.
+00:01:00.500 --> 00:01:05.100
+In the main menu, choose one for domains and HTTPS.
 
-00:01:05.400 --> 00:01:10.233
-In the domain menu, choose one for Workbench.
+00:01:05.100 --> 00:01:07.660
+Choose one again for AOS Work.
 
-00:01:10.500 --> 00:01:14.967
-Enter your Workbench hostname. Then press Enter.
+00:01:07.660 --> 00:01:10.020
+Type the host name that points to your server,
 
-00:01:15.167 --> 00:01:18.133
-The installer checks DNS and configures encryption.
+00:01:10.020 --> 00:01:11.500
+then press Enter.
 
-00:01:18.133 --> 00:01:24.033
-Wait for “settings saved” and the
-full address before moving on.
+00:01:11.500 --> 00:01:13.580
+Choose two for Studio.
 
-00:01:24.033 --> 00:01:28.933
-Back in the domain menu, choose two for Studio.
+00:01:13.580 --> 00:01:17.260
+With local MinIO, choose three for Storage as well.
 
-00:01:29.100 --> 00:01:34.633
-Enter your Studio hostname, then
-press Enter to configure HTTPS.
+00:01:17.260 --> 00:01:21.220
+Wait for the saved HTTPS address after each domain,
 
-00:01:34.633 --> 00:01:39.533
-Next, choose three for Storage.
+00:01:21.220 --> 00:01:23.740
+then choose zero to return.
 
-00:01:39.700 --> 00:01:43.967
-For local object storage, enter
-your Storage hostname here.
+00:01:23.740 --> 00:01:26.540
+Choose two to select a server package.
 
-00:01:44.167 --> 00:01:46.433
-Press Enter to continue.
+00:01:26.540 --> 00:01:30.980
+The latest package is listed first.
 
-00:01:46.433 --> 00:01:50.133
-There it is. Your Storage settings are saved.
+00:01:30.980 --> 00:01:32.100
+Choose one.
 
-00:01:50.133 --> 00:01:54.700
-With the three domains configured,
-choose zero to go back.
+00:01:32.100 --> 00:01:35.660
+The package includes the repository's preset resources.
 
-00:01:55.000 --> 00:01:59.733
-Choose two to see the available server packages.
+00:01:35.660 --> 00:01:38.100
+Wait for “Server package ready”.
 
-00:02:00.000 --> 00:02:05.733
-Your version may look different.
-Choose one for the latest release.
+00:01:38.100 --> 00:01:41.300
+Now choose three to deploy applications.
 
-00:02:06.000 --> 00:02:09.300
-Need an older package? Follow
-the Earlier releases link.
+00:01:41.300 --> 00:01:43.180
+Take a moment to read the list.
 
-00:02:09.433 --> 00:02:12.600
-“Server package ready” confirms the download.
+00:01:43.180 --> 00:01:47.533
+Choose three again to install Studio and AOS Work together.
 
-00:02:12.600 --> 00:02:17.300
-In the main menu, choose three to deploy AOS Work.
-
-00:02:17.533 --> 00:02:22.567
-Choose three again to install
-both Studio and Workbench.
-
-00:02:22.767 --> 00:02:25.700
-Now let’s set up the middleware.
-
-00:02:25.700 --> 00:02:30.800
+00:01:47.533 --> 00:01:52.633
 For PostgreSQL, choose one to run it on this server.
 
-00:02:31.067 --> 00:02:35.567
-Press Enter for the default
-username, then set a password.
+00:01:52.900 --> 00:01:57.400
+Press Enter for the default username, then set a password.
 
-00:02:35.567 --> 00:02:41.567
-The password stays hidden as you type.
-Press Enter, then type it again to confirm.
+00:01:57.400 --> 00:02:03.400
+The password stays hidden as you type. Press Enter, then type it again to confirm.
 
-00:02:41.567 --> 00:02:44.367
+00:02:03.400 --> 00:02:06.200
 Postgres and its vector extension are ready.
 
-00:02:44.533 --> 00:02:49.400
-For Redis, choose one to use the
-local Docker Compose service.
+00:02:06.366 --> 00:02:11.233
+For Redis, choose one to use the local Docker Compose service.
 
-00:02:49.633 --> 00:02:53.600
+00:02:11.466 --> 00:02:15.433
 Give Redis its own password.
 
-00:02:53.600 --> 00:02:58.800
+00:02:15.433 --> 00:02:20.633
 For RabbitMQ, choose one to run it locally.
 
-00:02:59.067 --> 00:03:02.900
-Accept the default username
-and set a RabbitMQ password.
+00:02:20.900 --> 00:02:24.733
+Accept the default username and set a RabbitMQ password.
 
-00:03:02.900 --> 00:03:08.033
-For object storage, choose
-one to deploy MinIO locally.
+00:02:24.733 --> 00:02:29.866
+For object storage, choose one to deploy MinIO locally.
 
-00:03:08.333 --> 00:03:10.767
+00:02:30.166 --> 00:02:32.600
 Set and confirm its password.
 
-00:03:10.900 --> 00:03:14.033
+00:02:32.733 --> 00:02:35.866
 Using hosted middleware? Choose External service.
 
-00:03:14.033 --> 00:03:18.833
-Once MinIO is ready, Studio
-starts deploying automatically.
+00:02:35.867 --> 00:02:37.427
+Once the middleware is ready,
 
-00:03:19.100 --> 00:03:23.733
-Enter and confirm the password that
-protects Studio’s encrypted data.
+00:02:37.427 --> 00:02:41.147
+set the default password for new AOS Work users.
 
-00:03:23.733 --> 00:03:29.133
-Look for “Studio is running” and its
-secure address. Workbench is next.
+00:02:41.147 --> 00:02:43.987
+Type it, press Enter, and type it again.
 
-00:03:29.133 --> 00:03:34.033
-Set the default password for
-new or reset Workbench users.
+00:02:43.987 --> 00:02:46.187
+The terminal keeps your input hidden.
 
-00:03:34.267 --> 00:03:38.333
-On a single host, enter zero for the sandbox host ID.
+00:02:46.187 --> 00:02:50.507
+Studio then asks for a separate password to protect encrypted data.
 
-00:03:38.333 --> 00:03:43.833
-Workbench passed its HTTP check.
-Now let’s open both sites.
+00:02:50.507 --> 00:02:52.227
+Enter and confirm it.
 
-00:03:43.833 --> 00:03:49.133
-Open the Studio address over HTTPS.
-Look for the sign-in form.
+00:02:52.227 --> 00:02:58.987
+This release uses Studio backend 1.8.12 and frontend 1.8.14.
 
-00:03:49.133 --> 00:03:54.433
-Now open the secure Workbench address.
-Its sign-in form should appear, too.
+00:02:58.987 --> 00:03:03.027
+On a single server, enter zero for the sandbox host ID.
 
-00:03:54.433 --> 00:03:59.633
-To update a service, choose four in the main menu.
+00:03:03.027 --> 00:03:04.867
+Press Enter to continue.
 
-00:03:59.900 --> 00:04:03.833
-Find the service you want to update in this list.
+00:03:04.867 --> 00:03:07.467
+After the AOS Work health check passes,
 
-00:04:03.833 --> 00:04:09.367
-Here’s the guide’s example.
-Studio Frontend is option two.
+00:03:07.467 --> 00:03:10.107
+look for the administrator sign-in details.
 
-00:04:09.600 --> 00:04:14.633
-Enter the Docker image tag you
-want. Press Enter to update.
+00:03:10.107 --> 00:03:15.187
+On a fresh installation, sign in as admin with the default password shown here.
 
-00:04:14.633 --> 00:04:19.667
-Back in the recording, choose
-zero to leave the update menu.
+00:03:15.187 --> 00:03:17.147
+Change it when you first sign in.
 
-00:04:19.900 --> 00:04:22.333
-Next, open the restart menu.
+00:03:17.147 --> 00:03:20.307
+Existing installations keep their current credentials.
 
-00:04:22.333 --> 00:04:27.433
-Choose five in the main menu
-to see your restart options.
+00:03:20.307 --> 00:03:23.187
+To update a service later, choose four.
 
-00:04:27.733 --> 00:04:32.300
-The first two restart groups. The
-others restart individual services.
+00:03:23.187 --> 00:03:26.347
+For example, choose two for the Studio frontend,
 
-00:04:32.533 --> 00:04:37.300
-For this walkthrough, choose
-zero to leave everything running.
+00:03:26.347 --> 00:03:28.627
+then enter the image tag you want.
 
-00:04:37.600 --> 00:04:40.333
-Back at the main menu, check service health.
+00:03:28.627 --> 00:03:31.347
+Choose five to see the restart options.
 
-00:04:40.333 --> 00:04:45.667
-Choose six and press Enter to see the health report.
+00:03:31.347 --> 00:03:33.667
+Zero returns to the main menu.
 
-00:04:45.933 --> 00:04:48.833
-Give the full table a moment to appear.
+00:03:33.667 --> 00:03:35.907
+Choose six for the health report.
 
-00:04:49.067 --> 00:04:54.133
-Look for “running.” Services with
-health checks should also say “healthy.”
+00:03:35.907 --> 00:03:38.947
+Look for running services and passing health checks.
 
-00:04:54.367 --> 00:04:58.467
-The storage job runs once. Here, “exited” is expected.
+00:03:38.947 --> 00:03:42.747
+The storage initialization job runs once and then exits.
 
-00:04:58.700 --> 00:05:03.667
-Twelve containers checked. All healthy.
-Your deployment is complete.
+00:03:42.747 --> 00:03:45.027
+When the summary says all healthy,
+
+00:03:45.027 --> 00:03:48.267
+open the secure addresses and check the sign-in pages.

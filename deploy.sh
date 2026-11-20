@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# aos-work deployment release: v2026.11.20.3
+# aos-work deployment release: v2026.11.20.4
 
 set -Eeuo pipefail
 export LC_ALL=C
@@ -332,7 +332,8 @@ from urllib.parse import urlsplit
 RELEASES = 'https://github.com/basilos-ai/aos-work-release/releases'
 # Newest first. Add the new tag here when preparing a release.
 VERSIONS = {
-    'v2026.11.20.3': None,
+    'v2026.11.20.4': None,
+    'v2026.11.20.3': '0aa654485df66da18af2e532538f30b76957c6d6ad87a120a8fd8783965e23aa',
     'v2026.11.20.2': '55229309a723d48ab68aee856754c0e0083ac836e0c2c00ca4ae527afe381e71',
     'v2026.11.20.1': 'ce0718d8c42b0a6ae04300207b0fc52ef29ad43b20a4619131f52e28e333ae38',
     'v2026.11.20': 'f6ac66c4c6e11b7c99cee52ee472d3f7b01fd9e93f546ffc73fabf82c9cbf96a',
@@ -3728,11 +3729,11 @@ configure_shared_user_password() {
 
   shared_password="${aos_password:-$studio_password}"
   if [[ -n "$aos_password" && -n "$studio_password" && "$aos_password" != "$studio_password" ]]; then
-    warn "Studio and AosWork have different default user passwords. Choose one for both."
+    warn "The configured default passwords for new AOS Work users differ. Choose one password."
     shared_password=""
   fi
   while [[ -z "$shared_password" || "$shared_password" == *CHANGE_ME* ]]; do
-    prompt_secret_confirm shared_password "Shared default password for new Studio and AosWork users"
+    prompt_secret_confirm shared_password "Default password for new AOS Work users"
     if [[ "$shared_password" == *CHANGE_ME* ]]; then
       warn "CHANGE_ME is reserved for unconfigured values. Choose a different password."
     fi

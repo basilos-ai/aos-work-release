@@ -15,23 +15,35 @@ Introduction
 00:00:27.900 --> 00:01:00.500
 3.1  Check the host
 
-00:01:00.500 --> 00:01:50.133
-3.2  Configure domains and HTTPS
+00:01:00.500 --> 00:01:23.733
+Domains and HTTPS
 
-00:01:50.133 --> 00:02:12.600
-3.2  Download the server package
+00:01:23.733 --> 00:01:38.100
+Select the server package
 
-00:02:12.600 --> 00:03:14.033
-3.3  Deploy middleware
+00:01:38.100 --> 00:01:47.533
+Select the applications
 
-00:03:14.033 --> 00:03:54.433
-3.4  Deploy the applications
+00:01:47.533 --> 00:02:35.867
+Configure middleware
 
-00:03:54.433 --> 00:04:22.333
-3.5  Update a service
+00:02:35.867 --> 00:02:46.200
+Default password for new AOS Work users
 
-00:04:22.333 --> 00:04:40.333
-3.6  Restart a service
+00:02:46.200 --> 00:02:58.933
+Studio data encryption
 
-00:04:40.333 --> 00:05:03.667
-3.8  Check service health
+00:02:58.933 --> 00:03:04.867
+Sandbox host ID
+
+00:03:04.867 --> 00:03:20.333
+Administrator sign-in
+
+00:03:20.333 --> 00:03:28.633
+Update a service
+
+00:03:28.633 --> 00:03:33.700
+Restart a service
+
+00:03:33.700 --> 00:03:50.267
+Check service health

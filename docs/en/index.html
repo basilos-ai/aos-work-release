@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Deploy AOS Work on a Linux host with automatic preflight checks, HTTPS setup, Studio and Workbench installation, and a final health check.">
+  <meta name="description" content="Deploy AOS Work on a Linux host with automatic preflight checks, HTTPS setup, Studio and AosWork installation, and a final health check.">
   <title>AOS Work Deployment Guide</title>
   <link rel="stylesheet" href="../guide.css">
   <link rel="alternate" hreflang="zh-CN" href="https://basilos-ai.github.io/aos-work-release/">
@@ -15,35 +15,35 @@
     <span lang="en" aria-current="page">English</span>
   </nav>
   <h1>AOS Work Deployment Guide</h1>
-  <video controls playsinline preload="metadata" poster="../media/aos-work-deployment.en.jpg?v=b0915349" aria-label="AOS Work deployment tutorial in English">
-    <source src="../media/aos-work-deployment.en.mp4?v=b0915349" type="video/mp4">
-    <track kind="captions" src="../media/aos-work-deployment.en.vtt?v=b0915349" srclang="en" label="English">
-    <track kind="chapters" src="../media/aos-work-deployment.en.chapters.vtt?v=b0915349" srclang="en" label="Chapters">
-    <a href="../media/aos-work-deployment.en.mp4?v=b0915349">Download the video</a>
+  <video controls playsinline preload="metadata" poster="../media/aos-work-deployment.en.jpg?v=dd69daf0" aria-label="AOS Work deployment tutorial in English">
+    <source src="../media/aos-work-deployment.en.mp4?v=dd69daf0" type="video/mp4">
+    <track kind="captions" src="../media/aos-work-deployment.en.vtt?v=dd69daf0" srclang="en" label="English">
+    <track kind="chapters" src="../media/aos-work-deployment.en.chapters.vtt?v=dd69daf0" srclang="en" label="Chapters">
+    <a href="../media/aos-work-deployment.en.mp4?v=dd69daf0">Download the video</a>
   </video>
   <nav class="files" aria-label="Tutorial files">
-    <a href="../media/aos-work-deployment.en.mp4?v=b0915349" download>Download English video (5 min 04 sec)</a>
-    <a href="../media/aos-work-deployment.en.vtt?v=b0915349" download>Download English captions</a>
-    <a href="https://github.com/basilos-ai/aos-work-release/releases/download/v2026.11.20.3/deploy.sh">Download the installer</a>
+    <a href="../media/aos-work-deployment.en.mp4?v=dd69daf0" download>Download English video (3 min 50 sec)</a>
+    <a href="../media/aos-work-deployment.en.vtt?v=dd69daf0" download>Download English captions</a>
+    <a href="https://github.com/basilos-ai/aos-work-release/releases/download/v2026.11.20.4/deploy.sh">Download the installer</a>
   </nav>
 
   <h2>1. Prepare the server</h2>
   <p>Use a Linux host with at least 4 CPU cores, 8 GB of RAM, and 100 GB of total capacity on the file system that holds the deployment directory. The host needs access to GHCR and Docker Hub.</p>
-  <p>Point the Workbench, Studio, and self-hosted storage domains at the server. Allow inbound TCP ports 80 and 443 in both the cloud security group and the host firewall. You can skip the storage domain when using a cloud object store.</p>
+  <p>Point the AosWork, Studio, and self-hosted storage domains at the server. Allow inbound TCP ports 80 and 443 in both the cloud security group and the host firewall. You can skip the storage domain when using a cloud object store.</p>
   <h2>2. Upload and run the installer</h2>
   <p>Download <code>deploy.sh</code> above. For a first installation, create <code>/home/aos-work</code> in the Termius SFTP panel and upload the script there. For an existing installation, use its original directory. On the server, run this command for the directory shown in the guide.</p>
   <pre><code>sudo bash /home/aos-work/deploy.sh</code></pre>
   <p>Under <code>Host preflight</code>, check the CPU count, RAM, disk capacity, and free space. The installer also reports whether each port is free, in use by Nginx, or in conflict. Review any <code>[WARN]</code> messages. If dependencies are missing, enter <code>y</code> to install them.</p>
   <h2>3. Configure domains and deploy the services</h2>
   <ol>
-    <li>Select <strong>1</strong> in the main menu, then <strong>1</strong> for Workbench, <strong>2</strong> for Studio, or <strong>3</strong> for local storage. Enter the matching domain and wait for its HTTPS settings to be saved. The installer checks HTTP and HTTPS from the host using the domain’s DNS records.</li>
-    <li>Enter <strong>0</strong> to return, then <strong>2</strong> to list the server packages. Select <strong>1</strong> for the first entry. The recording shows <code>v2026.11.19</code>. The installer linked here lists <code>v2026.11.19.1</code> first.</li>
-    <li>Select <strong>3</strong> in the main menu, then <strong>3</strong> again to deploy both Studio and Workbench. Choose local or external services for PostgreSQL, Redis, RabbitMQ, and object storage, and enter the requested credentials.</li>
-    <li>After middleware setup, the installer deploys Studio and Workbench. Set the Studio data encryption password and the Workbench default password for new or reset users. For a single host, enter <strong>0</strong> for <code>Stable sandbox host ID</code>.</li>
-    <li>When the checks pass, open the Studio and Workbench HTTPS addresses and confirm that both sign-in forms appear.</li>
+    <li>Select <strong>1</strong> in the main menu, then <strong>1</strong> for AosWork, <strong>2</strong> for Studio, or <strong>3</strong> for local storage. Enter the matching domain and wait for its HTTPS settings to be saved. The installer checks HTTP and HTTPS from the host using the domain’s DNS records.</li>
+    <li>Enter <strong>0</strong> to return, then <strong>2</strong> to list the server packages. Select <strong>1</strong> for the first entry. The first entry in this installer is <code>v2026.11.20.4</code>.</li>
+    <li>Select <strong>3</strong> in the main menu, then <strong>3</strong> again to deploy both Studio and AosWork. Choose local or external services for PostgreSQL, Redis, RabbitMQ, and object storage, and enter the requested credentials.</li>
+    <li>After middleware setup, enter and confirm the <code>Default password for new AOS Work users</code>. When Studio starts, set its separate data encryption password. For a single host, enter <strong>0</strong> for <code>Stable sandbox host ID</code>.</li>
+    <li>After AOS Work passes its checks, the installer shows the fresh-install administrator credentials. Change the default password on first sign-in. Open the Studio and AosWork HTTPS addresses and confirm that both sign-in forms appear.</li>
   </ol>
   <h2>4. Check health and maintain services</h2>
   <p>Select <strong>6</strong> in the main menu. Long-running services should show <code>running</code>. Services with health checks should also show <code>healthy</code>. The one-time <code>workbench-storage-init</code> job shows <code>exited</code> after it finishes successfully. Look for <code>All healthy</code> in the summary.</p>
-  <p>Select <strong>4</strong> to update a service or <strong>5</strong> to restart one. <a href="https://github.com/basilos-ai/aos-work-release/releases/tag/v2026.11.20.3">Release notes and offline packages</a></p>
+  <p>Select <strong>4</strong> to update a service or <strong>5</strong> to restart one. <a href="https://github.com/basilos-ai/aos-work-release/releases/tag/v2026.11.20.4">Release notes and offline packages</a></p>
 </main></body>
 </html>
