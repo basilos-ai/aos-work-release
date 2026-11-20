@@ -1,0 +1,9 @@
+# Administrator control-plane configuration for an OAuth Connector.
+# Keep this file in the administrator upload source package. Workbench filters
+# it from installed user resources and Runtime views.
+
+oauthClients:
+  - key: <connector-key>
+    authType: oauth
+    clientId: "<configure through the approved administrator path>"
+    clientSecret: "<configure through the approved secret-management path>"

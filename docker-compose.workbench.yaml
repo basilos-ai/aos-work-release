@@ -212,6 +212,7 @@ services:
         condition: service_healthy
     environment:
       NODE_ENV: ${NODE_ENV:-production}
+      RESOURCE_HUB_SEED_ENABLED: ${RESOURCE_HUB_SEED_ENABLED:-false}
       PORT: ${PORT:-3000}
       TZ: ${TZ:-Asia/Shanghai}
       APP_LOG_RETENTION_DAYS: ${APP_LOG_RETENTION_DAYS:-14}

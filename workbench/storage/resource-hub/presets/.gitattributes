@@ -1,0 +1,2 @@
+# Preserve original resource file bytes when checking out curated presets.
+* -text

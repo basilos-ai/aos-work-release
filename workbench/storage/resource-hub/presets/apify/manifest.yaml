@@ -1,0 +1,289 @@
+schemaVersion: 1
+
+plugin:
+  key: com.apify.platform
+  name: Apify Platform
+  version: 1.0.1
+  providerType: third_party
+  description: >-
+    Declarative integration for Apify Platform. Securely verify an API token, inspect Actors,
+    run Actors with default input, run the official Instagram Scraper, monitor or abort runs,
+    and retrieve Dataset metadata and JSON items.
+  hasIframe: false
+
+connector:
+  key: apify
+  authProviderKey: com.apify.platform
+
+auth:
+  type: api_key
+  apiKey:
+    placement: header
+    name: Authorization
+    valuePrefix: "Bearer "
+    hint: "New to Apify? Sign up at https://console.apify.com/sign-up. Create or copy your API token at https://console.apify.com/settings/integrations. Paste only the token here; never put it in chat or files."
+
+actions:
+  - key: verifyConnection
+    name: Verify Apify Connection
+    method: GET
+    url: https://api.apify.com/v2/users/me
+    auth: true
+    responseDataPath: "$.data"
+
+  - key: getActor
+    name: Get Actor
+    method: GET
+    url: https://api.apify.com/v2/actors/{{input.actorId}}
+    auth: true
+    input:
+      actorId:
+        type: string
+        description: "Actor ID or username~actor-name, for example apify~instagram-scraper."
+    responseDataPath: "$.data"
+
+  - key: runActorWithDefaults
+    name: Run Actor With Default Input
+    method: POST
+    url: https://api.apify.com/v2/actors/{{input.actorId}}/runs
+    auth: true
+    input:
+      actorId:
+        type: string
+        description: "Actor ID or username~actor-name. Use only when the Actor has usable default input."
+      maxItems:
+        type: integer
+        default: 100
+        description: "Maximum number of billable Dataset items for pay-per-result Actors."
+      maxTotalChargeUsd:
+        type: number
+        default: 1
+        description: "Maximum total charge allowed for this run, in USD."
+    query:
+      maxItems: "{{input.maxItems}}"
+      maxTotalChargeUsd: "{{input.maxTotalChargeUsd}}"
+    responseDataPath: "$.data"
+
+  - key: runInstagramByUrls
+    name: Run Instagram Scraper By URLs
+    method: POST
+    url: https://api.apify.com/v2/actors/apify~instagram-scraper/runs
+    auth: true
+    input:
+      directUrls:
+        type: array
+        description: "Array of full Instagram URLs to scrape. Each URL type must match resultsType."
+        items:
+          type: string
+      resultsType:
+        type: string
+        enum:
+          - posts
+          - details
+          - comments
+          - reels
+          - mentions
+          - stories
+        default: posts
+        description: "Content type to scrape. Comments require a post or Reel URL."
+      resultsLimit:
+        type: integer
+        default: 10
+        description: "Maximum number of results returned per URL."
+      addParentData:
+        type: boolean
+        default: false
+        description: "Whether to add parent metadata such as dataSource to feed items."
+      maxTotalChargeUsd:
+        type: number
+        default: 1
+        description: "Maximum total charge allowed for this run, in USD."
+    headers:
+      Content-Type: application/json
+    query:
+      maxTotalChargeUsd: "{{input.maxTotalChargeUsd}}"
+    body:
+      directUrls: "{{input.directUrls}}"
+      resultsType: "{{input.resultsType}}"
+      resultsLimit: "{{input.resultsLimit}}"
+      addParentData: "{{input.addParentData}}"
+    responseDataPath: "$.data"
+
+  - key: runInstagramSearch
+    name: Run Instagram Scraper By Search
+    method: POST
+    url: https://api.apify.com/v2/actors/apify~instagram-scraper/runs
+    auth: true
+    input:
+      search:
+        type: string
+        description: "Instagram search term. Hashtags may use the #travel format."
+      searchType:
+        type: string
+        enum:
+          - hashtag
+          - profile
+          - place
+          - user
+        default: profile
+        description: "Type of object to search for."
+      searchLimit:
+        type: integer
+        default: 10
+        description: "Maximum number of profiles, places, or hashtags to discover."
+      resultsType:
+        type: string
+        enum:
+          - posts
+          - details
+          - reels
+        default: posts
+        description: "Content type to collect from the discovered results."
+      resultsLimit:
+        type: integer
+        default: 10
+        description: "Maximum number of content items returned per discovered result."
+      addParentData:
+        type: boolean
+        default: false
+        description: "Whether to add parent metadata such as dataSource to feed items."
+      maxTotalChargeUsd:
+        type: number
+        default: 1
+        description: "Maximum total charge allowed for this run, in USD."
+    headers:
+      Content-Type: application/json
+    query:
+      maxTotalChargeUsd: "{{input.maxTotalChargeUsd}}"
+    body:
+      search: "{{input.search}}"
+      searchType: "{{input.searchType}}"
+      searchLimit: "{{input.searchLimit}}"
+      resultsType: "{{input.resultsType}}"
+      resultsLimit: "{{input.resultsLimit}}"
+      addParentData: "{{input.addParentData}}"
+    responseDataPath: "$.data"
+
+  - key: listRecentRuns
+    name: List Recent Runs
+    method: GET
+    url: https://api.apify.com/v2/actor-runs
+    auth: true
+    input:
+      offset:
+        type: integer
+        default: 0
+        description: "Number of run records to skip."
+      limit:
+        type: integer
+        default: 20
+        description: "Number of run records to return, up to 1000."
+      desc:
+        type: boolean
+        default: true
+        description: "Whether to sort by startedAt in descending order."
+    query:
+      offset: "{{input.offset}}"
+      limit: "{{input.limit}}"
+      desc: "{{input.desc}}"
+    responseDataPath: "$.data"
+
+  - key: getRun
+    name: Get Actor Run
+    method: GET
+    url: https://api.apify.com/v2/actor-runs/{{input.runId}}
+    auth: true
+    input:
+      runId:
+        type: string
+        description: "Actor run ID."
+      waitForFinish:
+        type: integer
+        default: 0
+        description: "Seconds to wait for the run to finish, from 0 to 60."
+    query:
+      waitForFinish: "{{input.waitForFinish}}"
+    responseDataPath: "$.data"
+
+  - key: abortRun
+    name: Abort Actor Run
+    method: POST
+    url: https://api.apify.com/v2/actor-runs/{{input.runId}}/abort
+    auth: true
+    input:
+      runId:
+        type: string
+        description: "Actor run ID to abort."
+      gracefully:
+        type: boolean
+        default: false
+        description: "Whether to send a migration event and wait for the Actor to exit gracefully."
+    query:
+      gracefully: "{{input.gracefully}}"
+    responseDataPath: "$.data"
+
+  - key: getDataset
+    name: Get Dataset Metadata
+    method: GET
+    url: https://api.apify.com/v2/datasets/{{input.datasetId}}
+    auth: true
+    input:
+      datasetId:
+        type: string
+        description: "Dataset ID, usually obtained from run.defaultDatasetId."
+    responseDataPath: "$.data"
+
+  - key: getDatasetItems
+    name: Get Dataset Items As JSON
+    method: GET
+    url: https://api.apify.com/v2/datasets/{{input.datasetId}}/items
+    auth: true
+    input:
+      datasetId:
+        type: string
+        description: "Dataset ID, usually obtained from run.defaultDatasetId."
+      offset:
+        type: integer
+        default: 0
+        description: "Number of Dataset items to skip."
+      limit:
+        type: integer
+        default: 100
+        description: "Maximum number of Dataset items to return in this request."
+      desc:
+        type: boolean
+        default: false
+        description: "Whether to return items in reverse storage order."
+    query:
+      format: json
+      clean: true
+      offset: "{{input.offset}}"
+      limit: "{{input.limit}}"
+      desc: "{{input.desc}}"
+    responseDataPath: "$"
+
+errors:
+  400: INVALID_ARGUMENT
+  401: INVALID_OR_MISSING_TOKEN
+  402: PAYMENT_OR_USAGE_LIMIT
+  403: PERMISSION_DENIED
+  404: RESOURCE_NOT_FOUND
+  409: RESOURCE_STATE_CONFLICT
+  429: THIRD_PARTY_RATE_LIMITED
+  500: THIRD_PARTY_INTERNAL_ERROR
+  503: THIRD_PARTY_UNAVAILABLE
+
+rateLimit:
+  subject: user
+  limit: 300
+  windowSeconds: 60
+
+redaction:
+  request:
+    - path: "$.headers.Authorization"
+      strategy: mask_secret
+  response:
+    - path: "$.data.urlSigningSecretKey"
+      strategy: mask_secret
+    - path: "$.urlSigningSecretKey"
+      strategy: mask_secret

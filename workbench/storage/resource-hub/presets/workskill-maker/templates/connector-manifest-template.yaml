@@ -1,0 +1,20 @@
+schemaVersion: 1
+
+plugin:
+  name: "<Connector display name>"
+  version: "<plugin version>"
+  description: "<short description>"
+
+connector:
+  key: <connector-key>
+  authProviderKey: <connector-key>
+
+# Select exactly one supported branch and replace the placeholder values.
+auth:
+  type: <none | token | oauth>
+
+actions: []
+
+# Optional provider error mappings.
+# errors:
+#   PROVIDER_ERROR: WORKBENCH_ERROR

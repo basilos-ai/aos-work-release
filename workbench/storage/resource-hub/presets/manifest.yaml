@@ -1,0 +1,113 @@
+# Resource Hub presets. Each name matches a directory in this catalog.
+# Published versions are immutable. Bump the version to release changed files.
+resources:
+  - sourceId: SK-0018
+    name: docx-processor
+    type: skill
+    description: >-
+      DOCX Processor — create, inspect, and perform bounded edits on DOCX files in Workspace using
+      python-docx. Use for reports, proposals, contracts, forms, text replacement, headings,
+      paragraphs, tables, and template-preserving edits that do not require Microsoft Word,
+      LibreOffice, .NET, or desktop automation.
+    version: 1.0.0
+  - sourceId: SK-0019
+    name: markdown-to-docx
+    type: skill
+    description: >-
+      Markdown to DOCX Converter — convert a Markdown file or raw Markdown string into a polished
+      Word DOCX document. Supports custom Word template files, includes built-in DOCX templates, and
+      is the right skill when the user asks to export Markdown to Word, generate a .docx report from
+      Markdown, or restyle Markdown content with a reference DOCX.
+    version: 1.0.0
+  - sourceId: SK-0020
+    name: pdf-processor
+    type: skill
+    description: >-
+      PDF Processor — use this skill when visual quality and design identity matter for a PDF:
+      CREATE (generate from scratch like reports, resumes, or proposals), FILL (complete form fields
+      in an existing PDF), or REFORMAT (apply design to existing content like converting Markdown to
+      a polished PDF). A token-based design system ensures consistent color, typography, and spacing
+      across all pages, with print-ready output.
+    version: 1.0.0
+  - sourceId: SK-0027
+    name: html-artifacts
+    type: skill
+    description: >-
+      HTML Artifact Generator — produce a self-contained HTML artifact instead of a markdown
+      document when the request is for content that benefits from spatial layout, color, real
+      diagrams, interactivity, or a round-trip editor. Use this skill aggressively whenever the user
+      asks for a "doc," "writeup," "plan," "spec," "report," "explainer," "summary," "comparison,"
+      "review," "PR description," "mockup," "diagram," "flowchart," "deck," "slides," "status
+      update," "post-mortem," "incident report," "playground," or a one-off "editor" or "tool" for
+      triaging/reordering/tuning anything — even if they don't explicitly say "HTML" or "artifact."
+      Also trigger when the user asks the agent to "explain," "summarize," "compare," "explore
+      options for," "brainstorm directions for," or "walk through" a non-trivial topic. Stay in
+      markdown only for short conversational replies, code-only outputs, terminal-style command
+      answers, and content that's genuinely just a few sentences.
+    version: 1.0.0
+  - sourceId: SK-0057
+    name: single-html-generator
+    type: skill
+    description: >-
+      HTML Generator — generate, revise, or transform supplied materials into a browser-ready
+      single-file HTML page. Use when the user asks for an HTML page, report, catalog, dashboard,
+      visual reference, proposal, or other standalone frontend artifact that must not become a
+      multi-file project.
+    version: 1.0.0
+  - sourceId: SK-0060
+    name: workskill-maker
+    type: skill
+    description: >-
+      Work Skill Maker — design, generate, validate, and package Workbench Skills, multi-member
+      Works, and API-Key or OAuth2 Connectors under the current resource standard. Use when a user
+      wants to turn a task, workflow, or external service integration into a complete Workbench
+      package.
+    version: 1.0.0
+  - sourceId: SK-0071
+    name: sales-work
+    type: work
+    description: >-
+      Sales — prepare evidence-based account briefs and call plans, create localized B2B playbooks
+      and personalized outreach, summarize meetings and action items, apply sales methodologies,
+      manage pipeline and account strategy, and build bottom-up forecasts and scenario models.
+    version: 0.3.0
+  - sourceId: SK-0072
+    name: legal-work
+    type: work
+    description: >-
+      Legal — triage legal requests and NDAs, identify common contract risks in Chinese or English,
+      review UK-oriented terms, prepare compliance gap checklists, and coordinate controlled
+      e-signature workflows. Outputs are preliminary and require qualified legal review.
+    version: 0.3.0
+  - sourceId: SK-0074
+    name: data-work
+    type: work
+    description: >-
+      Data — explore CSV, JSON, and JSONL datasets, run statistical and pivot analyses, validate
+      data quality and schema drift, design or execute read-only local SQL, and create static or
+      interactive charts, dashboards, and reports.
+    version: 0.3.0
+  - sourceId: SK-0216
+    name: aos-docs-search
+    type: skill
+    description: Search official AOS Work documentation for product and administration guidance.
+    version: 1.0.0
+  - sourceId: SK-0029
+    name: integration-tavily
+    type: connector
+    description: 'Connect to Tavily for bounded public-web search, extraction, site mapping, crawling, and research-oriented web intelligence.'
+    version: 1.0.0
+  - sourceId: SK-0064
+    name: apify
+    type: connector
+    description: 'Connect to Apify to run bounded public-web and social-media data collection, and inspect Actors, runs, and Dataset results.'
+    version: 1.0.1
+  # Localized PPT Master source: basilos-ai/resources-hub@0b9615730445d7d80b02fc2dc215256122e641c6
+  - sourceId: SK-0123
+    name: ppt-master
+    type: skill
+    description: >-
+      AI-driven presentation workflow for generating editable PPTX decks and slides,
+      reconstructing page visuals, creating reusable Brand/Style/Layout/Deck workspaces,
+      filling native PPTX templates, and enhancing finished PPTX files.
+    version: 6.3.2
