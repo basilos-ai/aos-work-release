@@ -8,12 +8,29 @@ case "$COMPONENT" in
 esac
 [[ "$IMAGE_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ && "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ && "$SOURCE_RUN" =~ ^[0-9]+$ ]]
 case "${IMAGE_TAG,,}" in latest|dev) exit 2 ;; esac
+export GH_REPO=basilos-ai/aos-work-release
 root=$PWD
+# A compare-and-swap ref serializes publishers running in different repositories.
+lock_ref=refs/heads/automation/image-release-lock
+owner=$(git -c user.name=github-actions -c user.email=github-actions@users.noreply.github.com \
+  commit-tree HEAD^{tree} -p HEAD -m "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN attempt $GITHUB_RUN_ATTEMPT")
+release_lock() {
+  git push --force-with-lease="$lock_ref:$owner" origin ":$lock_ref"
+}
+deadline=$((SECONDS + 600))
+until git push --force-with-lease="$lock_ref:" origin "$owner:$lock_ref"; do
+  # Retry contention only. Authentication and transport errors must surface.
+  git ls-remote --exit-code origin "$lock_ref" >/dev/null || exit 1
+  (( SECONDS < deadline )) || { echo 'Timed out waiting for release lock' >&2; exit 1; }
+  sleep 5
+done
+trap release_lock EXIT
+trap 'exit 1' TERM INT
 work=$(mktemp -d)
 previous=$work/previous
 out=$work/output
 mkdir "$previous"
-gh api "repos/$GITHUB_REPOSITORY/releases/latest" > "$previous/release.json"
+gh api "repos/$GH_REPO/releases/latest" > "$previous/release.json"
 base=$(jq -er .tag_name "$previous/release.json")
 [[ "$base" =~ ^v[0-9]{4}\.[0-9]{2}\.[0-9]{2}(\.[0-9]+)?$ ]]
 git fetch --tags origin
@@ -68,6 +85,6 @@ for asset in deploy.sh deploy.tar deploy.tar.gz SHA256SUMS; do
   jq -e --arg name "$asset" --arg digest "sha256:$digest" \
     '[.assets[] | select(.name == $name and .digest == $digest)] | length == 1' "$work/remote-assets.json" >/dev/null
 done
-[[ "$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)" == "$base" ]]
+[[ "$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name)" == "$base" ]]
 gh release edit "$tag" --draft=false --latest
 gh release view "$tag" --json url --jq .url >> "$GITHUB_STEP_SUMMARY"

@@ -1,7 +1,5 @@
 # Workbench 镜像发布
 
-先将接收工作流合入本仓库的 main，再启用Workbench 后端、前端和 Runtime 三个仓库 master 上的调用步骤。在调用方配置 Actions secret `AOS_WORK_RELEASE_DISPATCH_TOKEN`，使用限定到 basilos-ai/aos-work-release 的细粒度令牌，授予 Actions 写权限。发布仓库内置的 GITHUB_TOKEN 需要能够创建标签和 Release。
+后端、前端和 Runtime 的 master 构建在核验镜像后，在同一运行中检出本仓库指定的脚本提交并执行发布。每个调用仓库配置 Actions Secret `AOS_WORK_RELEASE_TOKEN`，使用仅对 basilos-ai/aos-work-release 授予 Contents 读写权限的令牌。脚本更新后在三个调用仓库更新固定提交。
 
-源仓库的手动镜像构建仅在 master 镜像发布并验证 latest digest 后请求发布。构建页记录派发结果，部署包的发布状态见此仓库的 Publish deployment package for a Workbench image。派发成功后若发布失败，重跑本仓库失败的运行即可。
-
-发布作业按单一队列处理，从上一个正式 Latest Release 的标签和附件生成新版本。日期采用上海时区。同一天的后续版本追加递增后缀。只有本次构建组件的版本会变化；安装器中的版本清单、下载链接和附件校验和随版本生成。发布提交位于新标签上，main 继续承载自动化和部署开发。四个附件上传到草稿并核对摘要后才发布。
+脚本在发布仓库原子创建临时分支 `automation/image-release-lock`，取得锁后读取 Latest Release，更新对应镜像版本和部署包。附件摘要核对成功后才公开草稿。正常退出按锁持有者的提交安全释放分支。若 runner 被强制终止留下锁，先查看锁提交中的运行链接，确认该运行已结束，再按锁提交 SHA 使用 Git 的 force-with-lease 删除锁分支并重跑失败作业。不同构建共用同一把锁。
