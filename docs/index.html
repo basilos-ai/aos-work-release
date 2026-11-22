@@ -24,7 +24,7 @@
   <nav class="files" aria-label="教程文件">
     <a href="media/aos-work-deployment.mp4?v=76a68a9f" download>下载中文视频（3 分 45 秒）</a>
     <a href="media/aos-work-deployment.zh.vtt?v=76a68a9f" download>下载中文字幕</a>
-    <a href="https://github.com/basilos-ai/aos-work-release/releases/download/v2026.11.20.4/deploy.sh">下载安装器</a>
+    <a href="https://github.com/basilos-ai/aos-work-release/releases/download/v2026.11.22/deploy.sh">下载安装器</a>
   </nav>
 
   <h2>1. 准备服务器</h2>
@@ -39,14 +39,14 @@
   <h2>3. 配置域名并部署服务</h2>
   <ol>
     <li>主菜单选 <strong>1</strong>。在子菜单选 <strong>1</strong> 配置 AosWork、<strong>2</strong> 配置 Studio、<strong>3</strong> 配置本机对象存储。每次只填写对应域名，等待 HTTPS 配置保存。安装器会从部署主机经 DNS 分别探测 HTTP 和 HTTPS。</li>
-    <li>输入 <strong>0</strong> 返回主菜单，选 <strong>2</strong> 打开部署包列表。输入 <strong>1</strong> 选择第一项。视频和本次安装器的首项均为 <code>v2026.11.20.4</code>。</li>
-    <li>主菜单选 <strong>3</strong>，子菜单再选 <strong>3</strong> 同时部署 Studio、AosWork。按提示选择 PostgreSQL、Redis、RabbitMQ 和对象存储的本地或外部模式，并填写凭据。</li>
+    <li>输入 <strong>0</strong> 返回主菜单，选 <strong>2</strong> 打开部署包列表。输入 <strong>1</strong> 选择第一项。本版安装器的首项为 <code>v2026.11.22</code>。视频使用 <code>v2026.11.20.4</code>。</li>
+    <li>主菜单选 <strong>3</strong>，子菜单再选 <strong>3</strong> 同时部署 Studio、AosWork。按提示选择 PostgreSQL、Redis、RabbitMQ 和对象存储的本地或外部模式，并填写凭据。新安装时，PostgreSQL、RabbitMQ 和 MinIO 的用户名默认是 <code>admin</code>，密码需分别设置。</li>
     <li>中间件就绪后，按 <code>Default password for new AOS Work users</code> 提示输入并确认新用户默认密码。随后为 Studio 单独设置数据加密密码。单机部署的 <code>Stable sandbox host ID</code> 填 <strong>0</strong>。</li>
     <li>AOS Work 健康检查通过后会显示全新安装的管理员凭据。首次登录时修改默认密码。随后分别打开 Studio 和 AosWork 的 HTTPS 地址，确认登录页可以访问。</li>
   </ol>
 
   <h2>4. 查看状态与维护</h2>
   <p>主菜单选 <strong>6</strong> 查看状态。常驻服务应为 <code>running</code>，配置了健康探针的服务应为 <code>healthy</code>。一次性初始化任务 <code>workbench-storage-init</code> 成功退出时显示 <code>exited</code>。最后核对汇总行 <code>All healthy</code>。</p>
-  <p>更新服务版本使用主菜单 <strong>4</strong>，重启服务使用主菜单 <strong>5</strong>。<a href="https://github.com/basilos-ai/aos-work-release/releases/tag/v2026.11.20.4">查看版本说明和离线安装包</a>。</p>
+  <p>更新服务版本使用主菜单 <strong>4</strong>，重启服务使用主菜单 <strong>5</strong>。<a href="https://github.com/basilos-ai/aos-work-release/releases/tag/v2026.11.22">查看版本说明和离线安装包</a>。</p>
 </main></body>
 </html>

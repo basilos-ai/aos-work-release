@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# aos-work deployment release: v2026.11.20.4
+# aos-work deployment release: v2026.11.22
 
 set -Eeuo pipefail
 export LC_ALL=C
@@ -332,21 +332,30 @@ from urllib.parse import urlsplit
 RELEASES = 'https://github.com/basilos-ai/aos-work-release/releases'
 # Newest first. Add the new tag here when preparing a release.
 VERSIONS = {
-    'v2026.11.20.4': None,
+    'v2026.11.22': None,
+    'v2026.11.20.4': '54924429d9e2d46bb02c252fa0b8c190baf0cfec0f8c843107b85821e46a428f',
     'v2026.11.20.3': '0aa654485df66da18af2e532538f30b76957c6d6ad87a120a8fd8783965e23aa',
     'v2026.11.20.2': '55229309a723d48ab68aee856754c0e0083ac836e0c2c00ca4ae527afe381e71',
     'v2026.11.20.1': 'ce0718d8c42b0a6ae04300207b0fc52ef29ad43b20a4619131f52e28e333ae38',
-    'v2026.11.20': 'f6ac66c4c6e11b7c99cee52ee472d3f7b01fd9e93f546ffc73fabf82c9cbf96a',
-    'v2026.11.19.1': 'f3d672c6166e084786c039aa2f0735762df930b24f0b6a4a738b64eaba057292',
-    'v2026.11.19': '246ea34d4ef1ecebcb83380bc571dd4cb80002e8ddbf7fcb588ac72d6de7e136',
 }
 # Keep verification for pending installs that resume from a manually uploaded archive.
 ARCHIVED_VERSIONS = {
+    'v2026.11.20': 'f6ac66c4c6e11b7c99cee52ee472d3f7b01fd9e93f546ffc73fabf82c9cbf96a',
+    'v2026.11.19.1': 'f3d672c6166e084786c039aa2f0735762df930b24f0b6a4a738b64eaba057292',
+    'v2026.11.19': '246ea34d4ef1ecebcb83380bc571dd4cb80002e8ddbf7fcb588ac72d6de7e136',
     'v2026.11.18.2': None,
     'v2026.11.18.1': 'e328e235b52651e9e43c857767e4b844944dd1efba61624f7525767c0c705f76',
     'v2026.11.18': 'b7f19f50f985f9fe93ba963cc7cdbbf6310fdc678faa5d1d76970e3b712d3429',
 }
-ENV = {'.env.' + g for g in ('middleware', 'studio', 'workbench')}
+# These values identify live resources. Selecting a different package must never
+# replace them, even when the operator originally accepted the suggested values.
+RESOURCE_KEYS = {
+    '.env.middleware': {'POSTGRESQL_USERNAME', 'POSTGRESQL_BOOTSTRAP_DATABASE',
+                        'RABBITMQ_USERNAME', 'RABBITMQ_VIRTUAL_HOST', 'MINIO_USERNAME'},
+    '.env.studio': {'POSTGRESQL_DATABASE'},
+    '.env.workbench': {'POSTGRESQL_DATABASE', 'RUNTIME_DB_DATABASE', 'RABBITMQ_VIRTUAL_HOST'},
+}
+ENV = set(RESOURCE_KEYS)
 WORKBENCH = {'workbench/storage/templates/AGENTS.md', 'workbench/storage/nginx/runtime-nginx.conf'}
 COMMON = WORKBENCH | {'deploy.sh', 'docker-compose.studio.yaml', 'docker-compose.workbench.yaml'}
 COMMON.update('compose/' + n + '.yaml' for n in ('db', 'cache', 'mq', 'storage'))
@@ -503,7 +512,8 @@ def install(root, folder, url):
                     defaults = previous.get(name, env_defaults(template.read_text().splitlines()))
                     # Carry local overrides (including custom keys) across package versions.
                     live = env_defaults(dest.read_text().splitlines())
-                    edited = {k: f'{k}={v}' for k, v in live.items() if defaults.get(k) != v}
+                    edited = {k: f'{k}={v}' for k, v in live.items()
+                              if defaults.get(k) != v or (k in RESOURCE_KEYS[name] and v and 'CHANGE_ME' not in v)}
                     lines = [edited.pop(line.partition('=')[0], line) for line in lines]
                     src.write_text('\n'.join([*lines, *edited.values()]) + '\n')
             if name in WORKBENCH and dest.exists():
@@ -1040,15 +1050,23 @@ def prepare_envs():
         if p.is_symlink() or (p.exists() and not p.is_file()):
             raise ValueError('Expected a regular environment file: ' + p.name)
         expected = read_env(template)
-        if not p.exists():
+        if p.exists():
+            actual = read_env(p)
+        else:
+            actual = {}
             shutil.copyfile(template, p)
-            p.chmod(0o600)
             print('Created ' + p.name)
         p.chmod(0o600)
-        actual = read_env(p)
         missing = set(expected) - set(actual)
         if missing:
-            print(p.name + ': adding missing template keys: ' + ', '.join(sorted(missing)))
+            if 'POSTGRESQL_DATABASE' in missing:
+                db = read_env(env_path('middleware')).get('POSTGRESQL_BOOTSTRAP_DATABASE')
+                if db:
+                    expected['POSTGRESQL_DATABASE'] = db
+            if 'RUNTIME_DB_DATABASE' in missing:
+                expected['RUNTIME_DB_DATABASE'] = actual.get('POSTGRESQL_DATABASE') or expected['POSTGRESQL_DATABASE']
+            if actual:
+                print(f'{p.name}: adding {len(missing)} missing configuration settings.')
             edit_env(p, {k: expected[k] for k in sorted(missing)})
 
 
@@ -1900,9 +1918,9 @@ MINIO_CONSOLE_HOST_PORT=9001
 # PostgreSQL
 POSTGRESQL_HOST=CHANGE_ME_POSTGRESQL_HOST
 POSTGRESQL_PORT=5432
-POSTGRESQL_USERNAME=basilos
+POSTGRESQL_USERNAME=admin
 POSTGRESQL_PASSWORD=CHANGE_ME_POSTGRESQL_PASSWORD
-POSTGRESQL_BOOTSTRAP_DATABASE=basilos
+POSTGRESQL_BOOTSTRAP_DATABASE=admin
 
 # Redis
 REDIS_HOST=CHANGE_ME_REDIS_HOST
@@ -1914,16 +1932,16 @@ REDIS_SSL=false
 RABBITMQ_HOST=CHANGE_ME_RABBITMQ_HOST
 RABBITMQ_PORT=5672
 RABBITMQ_MANAGEMENT_PORT=15672
-RABBITMQ_USERNAME=basilos
+RABBITMQ_USERNAME=admin
 RABBITMQ_PASSWORD=CHANGE_ME_RABBITMQ_PASSWORD
-RABBITMQ_VIRTUAL_HOST=/basilos
+RABBITMQ_VIRTUAL_HOST=/admin
 
 # MinIO object storage
 FILE_SERVICE_SELECTOR=minio
 MINIO_EXPOSE_URL=https://CHANGE_ME_STORAGE_DOMAIN
 MINIO_HOST=CHANGE_ME_MINIO_HOST
 MINIO_PORT=9000
-MINIO_USERNAME=CHANGE_ME_MINIO_USERNAME
+MINIO_USERNAME=admin
 MINIO_PASSWORD=CHANGE_ME_MINIO_PASSWORD
 MINIO_DATA_HOST_PATH=./data/minio
 MINIO_DATA_CONTAINER_PATH=/bitnami/minio/data
@@ -1974,7 +1992,7 @@ ASSETS_SEARCH_SNAPSHOT_URL=https://CHANGE_ME_STUDIO_FRONTEND_DOMAIN/basilos/asse
 VIEW_SNAPSHOT_URL=https://CHANGE_ME_STUDIO_FRONTEND_DOMAIN/basilos/studio/engine/multi-dim-table-embed
 
 # Studio database
-POSTGRESQL_DATABASE=basilos
+POSTGRESQL_DATABASE=admin
 
 # Studio Redis database
 REDIS_DATABASE=0
@@ -2061,8 +2079,8 @@ ASSETS_BASE_URL=
 DESKTOP_DOWNLOAD_BASE_URL=https://tyrion-team.oss-cn-shanghai.aliyuncs.com/Workbench
 
 # Workbench and Runtime databases
-POSTGRESQL_DATABASE=basilos
-RUNTIME_DB_DATABASE=basilos
+POSTGRESQL_DATABASE=admin
+RUNTIME_DB_DATABASE=admin
 DB_SCHEMA=workbench
 RUNTIME_DB_SCHEMA=runtime
 JWT_SECRET=CHANGE_ME_RANDOM_JWT_SECRET
@@ -2070,8 +2088,8 @@ ENCRYPTION_KEY=CHANGE_ME_RANDOM_ENCRYPTION_KEY
 # Shared with Studio. Used for new or reset AosWork users.
 DEFAULT_USER_PASSWORD=CHANGE_ME_DEFAULT_USER_PASSWORD
 
-# Runtime and Workbench resolve this URL to the shared /basilos vhost.
-RABBITMQ_VIRTUAL_HOST=//basilos
+# Runtime and Workbench resolve this URL to the shared /admin vhost.
+RABBITMQ_VIRTUAL_HOST=//admin
 REDIS_DATABASE=1
 RUNTIME_HTTP_SERVICE_TOKEN=CHANGE_ME_RUNTIME_HTTP_SERVICE_TOKEN
 RUNTIME_TO_WORKBENCH_SERVICE_TOKEN=CHANGE_ME_RUNTIME_TO_WORKBENCH_SERVICE_TOKEN
@@ -2642,6 +2660,12 @@ clear_azure_blob_config() {
   studio_set_env AZURE_BLOB_CONTAINER ""
 }
 
+configure_application_database() {
+  studio_set_env POSTGRESQL_DATABASE "$1"
+  workbench_set_env POSTGRESQL_DATABASE "$1"
+  workbench_set_env RUNTIME_DB_DATABASE "$1"
+}
+
 initialize_postgresql() {
   reuse_middleware postgresql && return 0
   local host=""
@@ -2655,9 +2679,9 @@ initialize_postgresql() {
     choose_mode PostgreSQL
     if [[ "$SELECTED_MODE" == local ]]; then
       ensure_image_version dotenv_get set_env POSTGRES_VERSION PostgreSQL
-      prompt_required username "Database username" basilos
+      prompt_required username "Database username" admin
       prompt_secret_confirm password "Database password"
-      database=basilos
+      database=admin
 
       POSTGRES_MODE=local
       set_env POSTGRESQL_HOST postgresql
@@ -2665,7 +2689,7 @@ initialize_postgresql() {
       set_env POSTGRESQL_USERNAME "$username"
       set_env POSTGRESQL_PASSWORD "$password"
       set_env POSTGRESQL_BOOTSTRAP_DATABASE "$database"
-      studio_set_env POSTGRESQL_DATABASE "$database"
+      configure_application_database "$database"
       rebuild_compose_files
 
       mkdir -p "$DEPLOY_DIR/data/postgresql"
@@ -2678,8 +2702,8 @@ initialize_postgresql() {
     else
       prompt_required host "PostgreSQL host"
       prompt_port port "PostgreSQL port" 5432
-      prompt_required database "Database name" basilos
-      prompt_required username "Database username" basilos
+      prompt_required database "Database name" admin
+      prompt_required username "Database username" admin
       prompt_secret_confirm password "Database password"
 
       POSTGRES_MODE=external
@@ -2688,7 +2712,7 @@ initialize_postgresql() {
       set_env POSTGRESQL_USERNAME "$username"
       set_env POSTGRESQL_PASSWORD "$password"
       set_env POSTGRESQL_BOOTSTRAP_DATABASE "$database"
-      studio_set_env POSTGRESQL_DATABASE "$database"
+      configure_application_database "$database"
       rebuild_compose_files
 
       if test_postgresql_external "$host" "$port" "$username" "$password" "$database"; then
@@ -2767,7 +2791,7 @@ initialize_rabbitmq() {
     choose_mode RabbitMQ
     if [[ "$SELECTED_MODE" == local ]]; then
       ensure_image_version dotenv_get set_env RABBITMQ_VERSION RabbitMQ
-      prompt_required username "RabbitMQ username" basilos
+      prompt_required username "RabbitMQ username" admin
       prompt_secret_confirm password "RabbitMQ password"
 
       RABBITMQ_MODE=local
@@ -2776,7 +2800,7 @@ initialize_rabbitmq() {
       set_env RABBITMQ_MANAGEMENT_PORT 15672
       set_env RABBITMQ_USERNAME "$username"
       set_env RABBITMQ_PASSWORD "$password"
-      set_env RABBITMQ_VIRTUAL_HOST /basilos
+      set_env RABBITMQ_VIRTUAL_HOST /admin
       rebuild_compose_files
 
       mkdir -p "$DEPLOY_DIR/data/rabbitmq"
@@ -2790,9 +2814,9 @@ initialize_rabbitmq() {
       prompt_required host "RabbitMQ host"
       prompt_port port "RabbitMQ port" 5672
       prompt_port management_port "RabbitMQ management port" 15672
-      prompt_required username "RabbitMQ username" basilos
+      prompt_required username "RabbitMQ username" admin
       prompt_secret_confirm password "RabbitMQ password"
-      prompt_required virtual_host "RabbitMQ Virtual Host" /basilos
+      prompt_required virtual_host "RabbitMQ Virtual Host" /admin
 
       RABBITMQ_MODE=external
       set_env RABBITMQ_HOST "$host"
@@ -2819,7 +2843,7 @@ configure_local_minio() {
   local expose_port=""
 
   ensure_image_version dotenv_get set_env MINIO_VERSION MinIO
-  prompt_required username "MinIO username" basilos
+  prompt_required username "MinIO username" admin
   prompt_secret_confirm password "MinIO password"
   expose_url="$(dotenv_get MINIO_EXPOSE_URL)"
   if [[ -z "$expose_url" || "$expose_url" == *CHANGE_ME* ]]; then
@@ -2856,7 +2880,7 @@ configure_external_minio() {
 
   prompt_required host "MinIO hostname or IP"
   prompt_port port "MinIO API port" 9000
-  prompt_required username "MinIO username"
+  prompt_required username "MinIO username" admin
   prompt_secret_confirm password "MinIO password"
   expose_url="$(dotenv_get MINIO_EXPOSE_URL)"
   [[ -n "$expose_url" && "$expose_url" != *CHANGE_ME* ]] || expose_url="http://$host:$port"
@@ -3180,7 +3204,11 @@ check_workbench_placeholders() {
 
   keys="$(awk -F= '
     /^[[:space:]]*#/ || !index($0, "=") { next }
-    index(substr($0, index($0, "=") + 1), "CHANGE_ME") { print $1 }
+    index(substr($0, index($0, "=") + 1), "CHANGE_ME") {
+      if ($1 == "BASILOS_GATEWAY_HOST") print "Studio gateway host"
+      else if ($1 == "BASILCRAW_API_HOST") print "AOS Work API host"
+      else print $1
+    }
   ' "$WORKBENCH_ENV_FILE")"
   if [[ -n "$keys" ]]; then
     warn "Unconfigured AosWork variables: $(printf '%s\n' "$keys" | tr '\n' ' ')"
@@ -3236,8 +3264,8 @@ deploy_workbench() {
   check_workbench_placeholders || return 1
 
   middleware_network="$(dotenv_get BASIL_NETWORK_NAME)"
-  docker network inspect "$middleware_network" >/dev/null ||
-    die "Missing AosWork Docker network: $middleware_network"
+  docker network inspect "$middleware_network" >/dev/null 2>&1 ||
+    die "The shared AOS Work Docker network is missing."
   workbench_compose config --quiet
 
   sandbox_image="$(workbench_get_env RUNTIME_SANDBOX_IMAGE):$(workbench_get_env RUNTIME_SANDBOX_VERSION)"
@@ -3279,10 +3307,10 @@ ensure_shared_network() {
   local network_name=""
 
   network_name="$(dotenv_get BASIL_NETWORK_NAME)"
-  [[ -n "$network_name" ]] || die "BASIL_NETWORK_NAME is required."
+  [[ -n "$network_name" ]] || die "Set the shared Docker network name in .env.middleware."
   if ! docker network inspect "$network_name" >/dev/null 2>&1; then
     docker network create --label "ai.basilos.deploy.directory=$DEPLOY_DIR" "$network_name" >/dev/null
-    info "Created shared network: $network_name"
+    info "Created the shared Docker network."
   fi
 }
 
@@ -3519,7 +3547,7 @@ show_container_health() {
     [[ -n "$details" ]] || continue
     IFS=$'\t' read -r project service image state health exit_code restarts <<< "$details"
     printf '%-20s %-28s %-12s %-10s %-8s %s\n' \
-      "$project" "$service" "$state" "$health" "$restarts" "$image"
+      "${project#basil-}" "$service" "$state" "$health" "$restarts" "$image"
     count=$((count + 1))
     if container_state_is_abnormal "$state" "$health" "$exit_code"; then
       issues=$((issues + 1))
