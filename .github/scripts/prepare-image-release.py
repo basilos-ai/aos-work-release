@@ -18,6 +18,20 @@ def replace_one(text, pattern, replacement):
     return result
 
 
+def update_image_row(notes, component, old_image, image_tag):
+    # The group is a display name. The image column identifies the component.
+    row = (rf"^\|[^|\r\n]+\|[ \t]*`{re.escape(component)}`[ \t]*\|[ \t]*"
+           r"`(?P<tag>[^`\r\n]+)`(?=[ \t]*(?:\||\r?$))")
+    matches = list(re.finditer(row, notes, flags=re.MULTILINE))
+    if len(matches) != 1:
+        raise ValueError(f"Expected one release notes row for {component}, found {len(matches)}")
+    match = matches[0]
+    if match["tag"] != old_image:
+        raise ValueError(f"{component} release notes show {match['tag']}, expected {old_image}")
+    start, end = match.span("tag")
+    return notes[:start] + image_tag + notes[end:]
+
+
 def sha(data):
     return hashlib.sha256(data).hexdigest()
 
@@ -34,7 +48,7 @@ def prepare(tree, previous, out, component, image_tag, tag):
     old_image, = re.findall(rf"^{key}=([^\s]+)$", env, re.MULTILINE)
     new_env = replace_one(env, rf"^{key}=.*$", f"{key}={image_tag}")
     # Preserve the other table rows, prose and download links to unrelated releases.
-    notes = replace_one(meta["body"], rf"^(\|\s*Workbench\s*\|\s*`{component}`\s*\|\s*)`{re.escape(old_image)}`", rf"\g<1>`{image_tag}`")
+    notes = update_image_row(meta["body"], component, old_image, image_tag)
     release_ref = rf"(?<![\w.]){re.escape(old_tag)}(?![\w.])"
     notes = re.sub(release_ref, tag, notes)
     title = replace_one(meta["name"], release_ref, tag)
