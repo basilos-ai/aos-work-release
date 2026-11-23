@@ -1,0 +1,6 @@
+oauthClients:
+  - key: basilos
+    displayName: BasilOS OAuth Client
+    authType: oauth2
+    clientId: '{{CLIENT_ID: {"title":"OAuth2 Client ID","description":"The OAuth2 Client ID used to identify the application during authentication. Enter the Client ID provided for your environment.","placeholder":"your-client-id"}}}'
+    clientSecret: '{{CLIENT_SECRET: {"title":"OAuth2 Client Secret","description":"The OAuth2 Client Secret used to authenticate the application. Enter the Client Secret provided for your environment and keep it confidential.","placeholder":"your-client-secret"}}}'

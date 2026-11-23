@@ -111,3 +111,18 @@ resources:
       reconstructing page visuals, creating reusable Brand/Style/Layout/Deck workspaces,
       filling native PPTX templates, and enhancing finished PPTX files.
     version: 6.3.2
+  - sourceId: SK-0217
+    name: basil-admin-console
+    type: connector
+    description: Manage Basil accounts, departments, system roles, and resource permissions.
+    version: 1.0.0
+  - sourceId: SK-0218
+    name: base
+    type: app
+    description: Manage Base tables and records through BasilOS authorization.
+    version: 1.0.0
+  - sourceId: SK-0219
+    name: library
+    type: app
+    description: Manage Library assets, boards, files, folders, metadata, rules, and sharing through BasilOS authorization.
+    version: 1.0.0
