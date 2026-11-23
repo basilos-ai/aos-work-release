@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# aos-work deployment release: v2026.11.23.2
+# aos-work deployment release: v2026.11.23.3
 
 set -Eeuo pipefail
 export LC_ALL=C
@@ -332,7 +332,8 @@ from urllib.parse import urlsplit
 RELEASES = 'https://github.com/basilos-ai/aos-work-release/releases'
 # Newest first. Add the new tag here when preparing a release.
 VERSIONS = {
-    'v2026.11.23.2': None,
+    'v2026.11.23.3': None,
+    'v2026.11.23.2': 'c9ae163a61a068154a8fda473b348c525c6ecb72bf45aae15c7793135f6bd0e9',
     'v2026.11.23.1': '6a026a9e141689ec64a182be3ff45659ecde84acf7f083235c41eebd19f7b9c7',
     'v2026.11.23': 'f1c67aace153039331d03c8c71100c153293e88bed38f0551236d519d6f06aa2',
     'v2026.11.22': '267096c1b689bb40522629cda8982c04e1982da32b3bd1e6e70723671cd79e93',
@@ -2055,6 +2056,7 @@ WORKBENCH_DEPLOYMENT_ROOT=/data/basil
 # Deploy/restart reuse cached images; Update pulls explicitly.
 WORKBENCH_IMAGE=ghcr.io/basilos-ai/workbench-backend
 WORKBENCH_VERSION=v1.8.61
+RESOURCE_HUB_SEED_ENABLED=true
 WORKBENCH_FRONTEND_IMAGE=ghcr.io/basilos-ai/workbench-frontend
 WORKBENCH_FRONTEND_VERSION=v1.8.50
 RUNTIME_IMAGE=ghcr.io/basilos-ai/workbench-runtime
