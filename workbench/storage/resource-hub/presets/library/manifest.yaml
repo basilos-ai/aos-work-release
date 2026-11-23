@@ -1,0 +1,1865 @@
+schemaVersion: 1
+
+plugin:
+  key: cloud.tyrion.workbench.library
+  name: Library
+  version: 1.0.0
+  providerType: official
+  description: >-
+    Manage Library assets, boards, files, folders, knowledge synchronization,
+    metadata, automation rules, and sharing through the current user's BasilOS
+    authorization.
+  hasIframe: false
+
+app:
+  key: library
+  entryPath: /library
+  authProviderKey: basilos
+
+variables:
+  base: 'https://{{AOS_STUDIO_DOMAIN: {"title":"AOS Studio Domain","description":"The domain name of the AOS Studio environment, including its domain suffix. Enter only the hostname, without https:// or an API path.","placeholder":"studio.example.com"}}}/typekey/api/v1'
+
+auth:
+  type: oauth2
+  oauth2:
+    authorizeUrl: 'https://{{AOS_STUDIO_DOMAIN: {"title":"AOS Studio Domain","description":"The domain name of the AOS Studio environment, including its domain suffix. Enter only the hostname, without https:// or an API path.","placeholder":"studio.example.com"}}}/typekey/api/v1/oauth2/authorize'
+    tokenUrl: 'https://{{AOS_STUDIO_DOMAIN: {"title":"AOS Studio Domain","description":"The domain name of the AOS Studio environment, including its domain suffix. Enter only the hostname, without https:// or an API path.","placeholder":"studio.example.com"}}}/typekey/api/v1/oauth2/token'
+    refreshUrl: 'https://{{AOS_STUDIO_DOMAIN: {"title":"AOS Studio Domain","description":"The domain name of the AOS Studio environment, including its domain suffix. Enter only the hostname, without https:// or an API path.","placeholder":"studio.example.com"}}}/typekey/api/v1/oauth2/token'
+    userInfoUrl: 'https://{{AOS_STUDIO_DOMAIN: {"title":"AOS Studio Domain","description":"The domain name of the AOS Studio environment, including its domain suffix. Enter only the hostname, without https:// or an API path.","placeholder":"studio.example.com"}}}/typekey/api/v1/oauth2/userinfo'
+    unbindUrl: 'https://{{AOS_STUDIO_DOMAIN: {"title":"AOS Studio Domain","description":"The domain name of the AOS Studio environment, including its domain suffix. Enter only the hostname, without https:// or an API path.","placeholder":"studio.example.com"}}}/typekey/api/v1/oauth2/bindings/current'
+    redirectUri: 'https://{{AOS_WORK_DOMAIN: {"title":"AOS Work Domain","description":"The domain name of the AOS Work (formerly Workbench) environment, including its domain suffix. Enter only the hostname, without https:// or a URL path.","placeholder":"work.example.com"}}}/basilcraw/api/apps/oauth2/callback'
+    resultBaseUrl: 'https://{{AOS_WORK_DOMAIN: {"title":"AOS Work Domain","description":"The domain name of the AOS Work (formerly Workbench) environment, including its domain suffix. Enter only the hostname, without https:// or a URL path.","placeholder":"work.example.com"}}}'
+    scopes:
+      - id
+      - username
+      - nickname
+      - email
+    options:
+      scopeSeparator: space
+      tokenRequestType: form
+      clientAuthMethod: basic
+      pkce: true
+    tokenFields:
+      accessToken: access_token
+      refreshToken: refresh_token
+      tokenType: token_type
+      expiresIn: expires_in
+    tokenPlacement:
+      type: bearer
+    account:
+      action: getCurrentUser
+      idField: id
+      nameField: username
+
+actions:
+  - key: getCurrentUser
+    name: Get current user
+    method: GET
+    url: '{{base}}/oauth2/userinfo'
+    auth: true
+    responseDataPath: '$'
+
+  - key: open
+    name: Open Library
+    method: GET
+    url: 'https://{{AOS_WORK_DOMAIN: {"title":"AOS Work Domain","description":"The domain name of the AOS Work (formerly Workbench) environment, including its domain suffix. Enter only the hostname, without https:// or a URL path.","placeholder":"work.example.com"}}}/library'
+    auth: false
+
+  - key: deleteBatch
+    name: '批量删除资源'
+    method: PUT
+    url: '{{base}}/assets/deleteBatch'
+    auth: true
+    input:
+      fileItemList:
+        type: array
+        description: '文件列表'
+      folderItemList:
+        type: array
+        description: '目录列表'
+    body:
+      fileItemList: '{{input.fileItemList}}'
+      folderItemList: '{{input.folderItemList}}'
+    responseDataPath: '$'
+
+  - key: moveBatch
+    name: '批量移动资源'
+    method: PUT
+    url: '{{base}}/assets/moveBatch'
+    auth: true
+    input:
+      targetParentId:
+        type: string
+        description: '目标父文件夹ID，0 表示根目录'
+      targetParentVersion:
+        type: integer
+        description: '目标父级目录版本（乐观锁）'
+      fileItemList:
+        type: array
+        description: '文件移动列表'
+      folderItemList:
+        type: array
+        description: '目录移动列表'
+      sharePolicy:
+        type: string
+        description: '直接分享处理策略'
+      shareSnapshotList:
+        type: array
+        description: '移动预览返回的全量分享快照'
+    body:
+      targetParentId: '{{input.targetParentId}}'
+      targetParentVersion: '{{input.targetParentVersion}}'
+      fileItemList: '{{input.fileItemList}}'
+      folderItemList: '{{input.folderItemList}}'
+      sharePolicy: '{{input.sharePolicy}}'
+      shareSnapshotList: '{{input.shareSnapshotList}}'
+    responseDataPath: '$'
+
+  - key: previewMove
+    name: '预览批量移动对直接分享的影响'
+    method: POST
+    url: '{{base}}/assets/moveBatch/preview'
+    auth: true
+    input:
+      targetParentId:
+        type: string
+        description: '目标父文件夹ID，0 表示根目录'
+      targetParentVersion:
+        type: integer
+        description: '目标父级目录版本（乐观锁）'
+      fileItemList:
+        type: array
+        description: '文件移动列表'
+      folderItemList:
+        type: array
+        description: '目录移动列表'
+      sharePolicy:
+        type: string
+        description: '直接分享处理策略'
+      shareSnapshotList:
+        type: array
+        description: '移动预览返回的全量分享快照'
+    body:
+      targetParentId: '{{input.targetParentId}}'
+      targetParentVersion: '{{input.targetParentVersion}}'
+      fileItemList: '{{input.fileItemList}}'
+      folderItemList: '{{input.folderItemList}}'
+      sharePolicy: '{{input.sharePolicy}}'
+      shareSnapshotList: '{{input.shareSnapshotList}}'
+    responseDataPath: '$'
+
+  - key: search
+    name: '资产统一搜索'
+    method: POST
+    url: '{{base}}/assets/search'
+    auth: true
+    input:
+      enableAI:
+        type: boolean
+        description: '是否启用 AI 单输入搜索；true 时只能传 naturalLanguage，false 或不传时只能传 keyword'
+      naturalLanguage:
+        type: string
+        description: 'AI 单输入自然语言；enableAI=true 时必填，enableAI=false 或不传时禁止传'
+      keyword:
+        type: string
+        description: '搜索关键词，传入时走四路召回（文件名/描述分词/描述向量/元数据），不传时走纯结构化查询'
+      folderIdList:
+        type: array
+        description: 'LITE模式的目录ID列表'
+      tagLogicType:
+        type: string
+        description: 'LITE模式标签逻辑（AND/OR）'
+      tagConditionList:
+        type: array
+        description: 'LITE模式标签条件列表'
+      filterConditionList:
+        type: array
+        description: '通用过滤条件列表（LITE/PRO通用），支持 CREATED_AT/UPDATED_AT/FILE_SIZE 等数据库字段的 GT/LT/BETWEEN 操作'
+      conditionGroupList:
+        type: array
+        description: 'PRO模式条件组列表'
+      fileTypeFilter:
+        type: array
+        description: '文件类型过滤列表，如 ["IMAGE", "VIDEO", "DOC"]，传 ALL 表示不过滤；传 ["FOLDER"] 表示仅搜索文件夹'
+      sortRule:
+        type: string
+        description: 'sortRule'
+      page:
+        type: integer
+        description: '页码，从1开始；不传默认1'
+      size:
+        type: integer
+        description: '每页数量；不传默认50，最大1000'
+    body:
+      enableAI: '{{input.enableAI}}'
+      naturalLanguage: '{{input.naturalLanguage}}'
+      keyword: '{{input.keyword}}'
+      folderIdList: '{{input.folderIdList}}'
+      tagLogicType: '{{input.tagLogicType}}'
+      tagConditionList: '{{input.tagConditionList}}'
+      filterConditionList: '{{input.filterConditionList}}'
+      conditionGroupList: '{{input.conditionGroupList}}'
+      fileTypeFilter: '{{input.fileTypeFilter}}'
+      sortRule: '{{input.sortRule}}'
+      page: '{{input.page}}'
+      size: '{{input.size}}'
+    responseDataPath: '$'
+
+  - key: generateStructuredCondition
+    name: '资产 AI 搜索条件生成'
+    method: POST
+    url: '{{base}}/assets/search/ai/structuredCondition'
+    auth: true
+    input:
+      naturalLanguage:
+        type: string
+        description: '自然语言搜索描述'
+        required: true
+    body:
+      naturalLanguage: '{{input.naturalLanguage}}'
+    responseDataPath: '$'
+
+  - key: getFilterFields
+    name: '获取搜索过滤字段定义'
+    method: GET
+    url: '{{base}}/assets/search/filterFields'
+    auth: true
+    input:
+      fileType:
+        type: string
+        description: '文件类型枚举，如 IMAGE、VIDEO、DOC；不传返回所有类型'
+        required: true
+    query:
+      fileType: '{{input.fileType}}'
+    responseDataPath: '$'
+
+  - key: changeModel
+    name: '切换模式'
+    method: PUT
+    url: '{{base}}/assets/system/changeModel'
+    auth: true
+    input:
+      planType:
+        type: string
+        description: '需要切换的模式'
+        required: true
+    query:
+      planType: '{{input.planType}}'
+    responseDataPath: '$'
+
+  - key: getUserHabit
+    name: '获取用户习惯'
+    method: GET
+    url: '{{base}}/assets/system/getUserHabit'
+    auth: true
+    input:
+      habitType:
+        type: string
+        description: '获取的类型'
+        required: true
+    query:
+      habitType: '{{input.habitType}}'
+    responseDataPath: '$'
+
+  - key: getCurrentModel
+    name: '获取当前用户模式'
+    method: GET
+    url: '{{base}}/assets/system/model'
+    auth: true
+    responseDataPath: '$'
+
+  - key: saveUserHabit
+    name: '保存用户习惯'
+    method: PUT
+    url: '{{base}}/assets/system/saveUserHabit'
+    auth: true
+    input:
+      habitType:
+        type: string
+        description: '用户习惯类型'
+      habitValue:
+        type: string
+        description: '用户习惯值'
+    body:
+      habitType: '{{input.habitType}}'
+      habitValue: '{{input.habitValue}}'
+    responseDataPath: '$'
+
+  - key: saveSearchConfig
+    name: '保存资产搜索权重配置'
+    method: PUT
+    url: '{{base}}/assets/system/searchConfig'
+    auth: true
+    input:
+      fileNameWeight:
+        type: number
+        description: '文件名召回权重'
+      fullTextWeight:
+        type: number
+        description: '分词召回权重'
+      vectorWeight:
+        type: number
+        description: '向量召回权重'
+      metadataWeight:
+        type: number
+        description: '元数据召回权重'
+    body:
+      fileNameWeight: '{{input.fileNameWeight}}'
+      fullTextWeight: '{{input.fullTextWeight}}'
+      vectorWeight: '{{input.vectorWeight}}'
+      metadataWeight: '{{input.metadataWeight}}'
+    responseDataPath: '$'
+
+  - key: saveBoard
+    name: '创建画板'
+    method: POST
+    url: '{{base}}/assets/board'
+    auth: true
+    input:
+      name:
+        type: string
+        description: '画板名称'
+        required: true
+      description:
+        type: string
+        description: '画板描述'
+    body:
+      name: '{{input.name}}'
+      description: '{{input.description}}'
+    responseDataPath: '$'
+
+  - key: getBoard
+    name: '查询画板详情'
+    method: GET
+    url: '{{base}}/assets/board/{{input.boardId}}'
+    auth: true
+    input:
+      boardId:
+        type: string
+        description: '画板ID'
+        required: true
+    responseDataPath: '$'
+
+  - key: updateBoard
+    name: '更新画板基础信息'
+    method: PUT
+    url: '{{base}}/assets/board/{{input.boardId}}'
+    auth: true
+    input:
+      boardId:
+        type: string
+        description: '画板ID'
+        required: true
+      name:
+        type: string
+        description: '画板名称'
+        required: true
+      description:
+        type: string
+        description: '画板描述'
+    body:
+      name: '{{input.name}}'
+      description: '{{input.description}}'
+    responseDataPath: '$'
+
+  - key: deleteBoard
+    name: '删除画板'
+    method: DELETE
+    url: '{{base}}/assets/board/{{input.boardId}}'
+    auth: true
+    input:
+      boardId:
+        type: string
+        description: '画板ID'
+        required: true
+    responseDataPath: '$'
+
+  - key: saveElement
+    name: '新增画板元素'
+    method: POST
+    url: '{{base}}/assets/board/{{input.boardId}}/element'
+    auth: true
+    input:
+      boardId:
+        type: string
+        description: '画板ID'
+        required: true
+      assetsBoardElementSaveVOs:
+        type: array
+        description: '画板元素保存参数'
+        required: true
+    body: '{{input.assetsBoardElementSaveVOs}}'
+    responseDataPath: '$'
+
+  - key: deleteElement
+    name: '删除画板元素'
+    method: DELETE
+    url: '{{base}}/assets/board/{{input.boardId}}/element'
+    auth: true
+    input:
+      boardId:
+        type: string
+        description: '画板ID'
+        required: true
+      idList:
+        type: array
+        description: 'id集合'
+    body:
+      idList: '{{input.idList}}'
+    responseDataPath: '$'
+
+  - key: updateElement
+    name: '更新画板元素'
+    method: PUT
+    url: '{{base}}/assets/board/{{input.boardId}}/element/{{input.elementId}}'
+    auth: true
+    input:
+      boardId:
+        type: string
+        description: '画板ID'
+        required: true
+      elementId:
+        type: string
+        description: '元素ID'
+        required: true
+      content:
+        type: string
+        description: '备注内容，仅NOTE类型使用'
+      elementJson:
+        type: object
+        description: '单个画板元素的前端编辑JSON'
+        required: true
+    body:
+      content: '{{input.content}}'
+      elementJson: '{{input.elementJson}}'
+    responseDataPath: '$'
+
+  - key: pageBoard
+    name: '分页查询画板'
+    method: POST
+    url: '{{base}}/assets/board/page'
+    auth: true
+    input:
+      sortField:
+        type: string
+        description: '排序字段'
+      sortDirection:
+        type: string
+        description: '排序方向'
+      page:
+        type: integer
+        description: '页码'
+        required: true
+      size:
+        type: integer
+        description: '每页返回数据记录数, 最大值1000'
+        required: true
+      name:
+        type: string
+        description: '画板名称关键词'
+    body:
+      sortField: '{{input.sortField}}'
+      sortDirection: '{{input.sortDirection}}'
+      page: '{{input.page}}'
+      size: '{{input.size}}'
+      name: '{{input.name}}'
+    responseDataPath: '$'
+
+  - key: deleteFile
+    name: '删除文件'
+    method: DELETE
+    url: '{{base}}/assets/file'
+    auth: true
+    input:
+      folderId:
+        type: string
+        description: '文件夹ID'
+        required: true
+      fileId:
+        type: string
+        description: '文件Id'
+        required: true
+    body:
+      folderId: '{{input.folderId}}'
+      fileId: '{{input.fileId}}'
+    responseDataPath: '$'
+
+  - key: getTargetFileInfo
+    name: '根据目标类型、目标ID或资产路径获取相关文件信息'
+    method: GET
+    url: '{{base}}/assets/file/access/file/info'
+    auth: true
+    input:
+      targetType:
+        type: string
+        description: '目标类型，FILE/FOLDER'
+      targetId:
+        type: string
+        description: '目标ID'
+      path:
+        type: string
+        description: '资产路径，优先级高于目标类型和目标ID'
+    query:
+      targetType: '{{input.targetType}}'
+      targetId: '{{input.targetId}}'
+      path: '{{input.path}}'
+    responseDataPath: '$'
+
+  - key: addMetadataField
+    name: '添加文件元数据字段'
+    method: POST
+    url: '{{base}}/assets/file/metadata'
+    auth: true
+    input:
+      fileId:
+        type: string
+        description: '文件ID'
+        required: true
+      version:
+        type: integer
+        description: '版本号（乐观锁）'
+        required: true
+      fieldId:
+        type: string
+        description: '元数据字段ID'
+        required: true
+      value:
+        type: string
+        description: '元数据值'
+    body:
+      fileId: '{{input.fileId}}'
+      version: '{{input.version}}'
+      fieldId: '{{input.fieldId}}'
+      value: '{{input.value}}'
+    responseDataPath: '$'
+
+  - key: updateMetadataField
+    name: '修改文件元数据字段'
+    method: PUT
+    url: '{{base}}/assets/file/metadata'
+    auth: true
+    input:
+      fileId:
+        type: string
+        description: '文件ID'
+        required: true
+      version:
+        type: integer
+        description: '版本号（乐观锁）'
+        required: true
+      fieldId:
+        type: string
+        description: '元数据字段ID'
+        required: true
+      value:
+        type: string
+        description: '元数据值'
+    body:
+      fileId: '{{input.fileId}}'
+      version: '{{input.version}}'
+      fieldId: '{{input.fieldId}}'
+      value: '{{input.value}}'
+    responseDataPath: '$'
+
+  - key: deleteMetadataField
+    name: '删除文件元数据字段'
+    method: DELETE
+    url: '{{base}}/assets/file/metadata'
+    auth: true
+    input:
+      fileId:
+        type: string
+        description: '文件ID'
+        required: true
+      version:
+        type: integer
+        description: '版本号（乐观锁）'
+        required: true
+      fieldId:
+        type: string
+        description: '元数据字段ID'
+        required: true
+    body:
+      fileId: '{{input.fileId}}'
+      version: '{{input.version}}'
+      fieldId: '{{input.fieldId}}'
+    responseDataPath: '$'
+
+  - key: moveFile
+    name: '移动文件'
+    method: PUT
+    url: '{{base}}/assets/file/move'
+    auth: true
+    input:
+      fileId:
+        type: string
+        description: '文件ID'
+        required: true
+      targetParentId:
+        type: string
+        description: '目标父文件夹ID，0 表示根目录'
+      version:
+        type: integer
+        description: '版本号（乐观锁）'
+        required: true
+    body:
+      fileId: '{{input.fileId}}'
+      targetParentId: '{{input.targetParentId}}'
+      version: '{{input.version}}'
+    responseDataPath: '$'
+
+  - key: getFilePreview
+    name: '获取文件预览信息'
+    method: GET
+    url: '{{base}}/assets/file/preview/{{input.fileId}}'
+    auth: true
+    input:
+      fileId:
+        type: string
+        description: 'fileId'
+        required: true
+    responseDataPath: '$'
+
+  - key: batchGetFilePreview
+    name: '批量获取文件预览信息'
+    method: POST
+    url: '{{base}}/assets/file/preview/batch'
+    auth: true
+    input:
+      idList:
+        type: array
+        description: '文件ID列表'
+        required: true
+    body:
+      idList: '{{input.idList}}'
+    responseDataPath: '$'
+
+  - key: operatePublicAccess
+    name: '批量文件和递归文件夹操作公开访问'
+    method: POST
+    url: '{{base}}/assets/file/public/access/action'
+    auth: true
+    input:
+      action:
+        type: string
+        description: '公开访问动作，ENABLE 开启，DISABLE 关闭'
+        required: true
+      fileIdList:
+        type: array
+        description: '文件ID列表'
+      folderIdList:
+        type: array
+        description: '文件夹ID列表，包含递归子文件夹'
+      targetList:
+        type: array
+        description: '文件或文件夹目标列表，可按 targetType + targetId 或 path 定位'
+    body:
+      action: '{{input.action}}'
+      fileIdList: '{{input.fileIdList}}'
+      folderIdList: '{{input.folderIdList}}'
+      targetList: '{{input.targetList}}'
+    responseDataPath: '$'
+
+  - key: getRecentFiles
+    name: '获取最近访问前20的文件'
+    method: GET
+    url: '{{base}}/assets/file/recent'
+    auth: true
+    input:
+      top:
+        type: integer
+        description: '获取最近访问的文件(默认20)'
+        required: true
+    query:
+      top: '{{input.top}}'
+    responseDataPath: '$'
+
+  - key: renameFile
+    name: '重命名文件'
+    method: PUT
+    url: '{{base}}/assets/file/rename'
+    auth: true
+    input:
+      fileId:
+        type: string
+        description: '文件ID'
+        required: true
+      newName:
+        type: string
+        description: '新名称'
+        required: true
+      version:
+        type: integer
+        description: '版本号（乐观锁）'
+        required: true
+    body:
+      fileId: '{{input.fileId}}'
+      newName: '{{input.newName}}'
+      version: '{{input.version}}'
+    responseDataPath: '$'
+
+  - key: uploadFile
+    name: '上传文件到指定目录'
+    method: POST
+    url: '{{base}}/assets/file/upload'
+    auth: true
+    input:
+      folderId:
+        type: string
+        description: '目录ID'
+        required: true
+      folderVersion:
+        type: integer
+        description: '目录版本（乐观锁）'
+        required: true
+      file:
+        type: string
+        description: '上传的文件'
+        required: true
+    query:
+      folderId: '{{input.folderId}}'
+      folderVersion: '{{input.folderVersion}}'
+      file: '{{input.file}}'
+    responseDataPath: '$'
+
+  - key: batchGetUrls
+    name: '批量获取资产文件公开URL或预签名URL'
+    method: POST
+    url: '{{base}}/assets/file/url/batch'
+    auth: true
+    input:
+      assetsFileUrlQueryVOs:
+        type: array
+        description: '资产文件 URL 查询参数'
+        required: true
+    body: '{{input.assetsFileUrlQueryVOs}}'
+    responseDataPath: '$'
+
+  - key: getAccessibleFolderTree
+    name: '查询当前用户有权限的所有目录树'
+    method: GET
+    url: '{{base}}/assets/access/folder/tree'
+    auth: true
+    responseDataPath: '$'
+
+  - key: deleteFolder
+    name: '删除目录'
+    method: DELETE
+    url: '{{base}}/assets/folder'
+    auth: true
+    input:
+      folderId:
+        type: string
+        description: '目录ID'
+        required: true
+      version:
+        type: integer
+        description: '当前目录版本（乐观锁）'
+        required: true
+      parentVersion:
+        type: integer
+        description: '父级目录版本（乐观锁）'
+        required: true
+    body:
+      folderId: '{{input.folderId}}'
+      version: '{{input.version}}'
+      parentVersion: '{{input.parentVersion}}'
+    responseDataPath: '$'
+
+  - key: getFieldDisplayRuleDetail
+    name: '查询文件夹字段展示配置'
+    method: GET
+    url: '{{base}}/assets/folder/field/display'
+    auth: true
+    input:
+      folderId:
+        type: string
+        description: '文件夹ID，0表示Home'
+        required: true
+    query:
+      folderId: '{{input.folderId}}'
+    responseDataPath: '$'
+
+  - key: saveFieldDisplayRule
+    name: '保存文件夹字段展示配置'
+    method: PUT
+    url: '{{base}}/assets/folder/field/display'
+    auth: true
+    input:
+      folderId:
+        type: string
+        description: '文件夹ID'
+        required: true
+      displayMode:
+        type: string
+        description: '字段展示模式：FOLLOW_PARENT、ALL、CUSTOM'
+        required: true
+      metadataFieldIdList:
+        type: array
+        description: '元数据字段ID列表'
+    body:
+      folderId: '{{input.folderId}}'
+      displayMode: '{{input.displayMode}}'
+      metadataFieldIdList: '{{input.metadataFieldIdList}}'
+    responseDataPath: '$'
+
+  - key: listFieldDisplayMetadataOptions
+    name: '搜索字段展示配置元数据字段候选'
+    method: GET
+    url: '{{base}}/assets/folder/field/display/metadata/options'
+    auth: true
+    input:
+      keyword:
+        type: string
+        description: '字段名称关键字'
+    query:
+      keyword: '{{input.keyword}}'
+    responseDataPath: '$'
+
+  - key: pageFolderFiles
+    name: '分页查询目录当前层级下的文件'
+    method: GET
+    url: '{{base}}/assets/folder/file/page'
+    auth: true
+    input:
+      folderId:
+        type: string
+        description: '目录ID'
+        required: true
+      page:
+        type: integer
+        description: '页码'
+        required: true
+      size:
+        type: integer
+        description: '每页返回数据记录数, 最大值1000'
+        required: true
+      keyword:
+        type: string
+        description: '关键词'
+      type:
+        type: string
+        description: '类型过滤（可选）：FOLDER-只显示文件夹，FILE-只显示文件，不传则显示全部'
+      fileTypeFilter:
+        type: array
+        description: '文件类型过滤列表，如 ["IMAGE", "VIDEO", "DOC"]，传 ALL 表示不过滤'
+      sortField:
+        type: string
+        description: '排序字段'
+      sortDirection:
+        type: string
+        description: '排序方向'
+    query:
+      folderId: '{{input.folderId}}'
+      page: '{{input.page}}'
+      size: '{{input.size}}'
+      keyword: '{{input.keyword}}'
+      type: '{{input.type}}'
+      fileTypeFilter: '{{input.fileTypeFilter}}'
+      sortField: '{{input.sortField}}'
+      sortDirection: '{{input.sortDirection}}'
+    responseDataPath: '$'
+
+  - key: moveFolder
+    name: '移动文件夹'
+    method: PUT
+    url: '{{base}}/assets/folder/move'
+    auth: true
+    input:
+      folderId:
+        type: string
+        description: '目录ID'
+        required: true
+      targetParentId:
+        type: string
+        description: '目标父文件夹ID，0 表示根目录'
+      version:
+        type: integer
+        description: '当前目录版本（乐观锁）'
+        required: true
+      parentVersion:
+        type: integer
+        description: '父级目录版本（乐观锁）'
+        required: true
+      targetParentVersion:
+        type: integer
+        description: '目标父级目录版本（乐观锁）'
+        required: true
+    body:
+      folderId: '{{input.folderId}}'
+      targetParentId: '{{input.targetParentId}}'
+      version: '{{input.version}}'
+      parentVersion: '{{input.parentVersion}}'
+      targetParentVersion: '{{input.targetParentVersion}}'
+    responseDataPath: '$'
+
+  - key: navigate
+    name: '目录导航：支持路径定位和 ID 定位；每个追溯节点按文件ID返回有界文件批次，fileSize默认30且最大1000，fileCursor只作用于当前目标目录'
+    method: GET
+    url: '{{base}}/assets/folder/navigate'
+    auth: true
+    input:
+      path:
+        type: string
+        description: '目录路径，例如 /Home/产品/设计稿；传入后优先按路径定位'
+      targetId:
+        type: string
+        description: '目标资源ID；path 为空时生效'
+      targetType:
+        type: string
+        description: '目标资源类型，支持 FILE 或 FOLDER；path 为空且 targetId 非空时生效'
+      fileCursor:
+        type: integer
+        description: '当前目标目录文件上一批最后ID，首次调用不传'
+      fileSize:
+        type: integer
+        description: '每个追溯节点文件批次大小，默认30，范围1～1000'
+    query:
+      path: '{{input.path}}'
+      targetId: '{{input.targetId}}'
+      targetType: '{{input.targetType}}'
+      fileCursor: '{{input.fileCursor}}'
+      fileSize: '{{input.fileSize}}'
+    responseDataPath: '$'
+
+  - key: getFolderOptional
+    name: '获取文件夹下拉列表'
+    method: GET
+    url: '{{base}}/assets/folder/optional'
+    auth: true
+    responseDataPath: '$'
+
+  - key: getFolderOptionalChildren
+    name: '获取指定父目录下的一层文件夹下拉列表'
+    method: GET
+    url: '{{base}}/assets/folder/optional/children'
+    auth: true
+    input:
+      parentId:
+        type: string
+        description: 'parentId'
+    query:
+      parentId: '{{input.parentId}}'
+    responseDataPath: '$'
+
+  - key: pageFolderChildren
+    name: '分页查询目录下的文件'
+    method: GET
+    url: '{{base}}/assets/folder/page'
+    auth: true
+    input:
+      folderId:
+        type: string
+        description: '目录ID'
+        required: true
+      page:
+        type: integer
+        description: '页码'
+        required: true
+      size:
+        type: integer
+        description: '每页返回数据记录数, 最大值1000'
+        required: true
+      keyword:
+        type: string
+        description: '关键词'
+      type:
+        type: string
+        description: '类型过滤（可选）：FOLDER-只显示文件夹，FILE-只显示文件，不传则显示全部'
+      fileTypeFilter:
+        type: array
+        description: '文件类型过滤列表，如 ["IMAGE", "VIDEO", "DOC"]，传 ALL 表示不过滤'
+      sortField:
+        type: string
+        description: '排序字段'
+      sortDirection:
+        type: string
+        description: '排序方向'
+    query:
+      folderId: '{{input.folderId}}'
+      page: '{{input.page}}'
+      size: '{{input.size}}'
+      keyword: '{{input.keyword}}'
+      type: '{{input.type}}'
+      fileTypeFilter: '{{input.fileTypeFilter}}'
+      sortField: '{{input.sortField}}'
+      sortDirection: '{{input.sortDirection}}'
+    responseDataPath: '$'
+
+  - key: pageFolderChildrenNew
+    name: '分页查询目录下的文件'
+    method: POST
+    url: '{{base}}/assets/folder/page'
+    auth: true
+    input:
+      folderId:
+        type: string
+        description: '目录ID'
+        required: true
+      page:
+        type: integer
+        description: '页码'
+        required: true
+      size:
+        type: integer
+        description: '每页返回数据记录数, 最大值1000'
+        required: true
+      keyword:
+        type: string
+        description: '关键词'
+      type:
+        type: string
+        description: '类型过滤（可选）：FOLDER-只显示文件夹，FILE-只显示文件，不传则显示全部'
+      fileTypeFilter:
+        type: array
+        description: '文件类型过滤列表，如 ["IMAGE", "VIDEO", "DOC"]，传 ALL 表示不过滤'
+      sortField:
+        type: string
+        description: '排序字段'
+      sortDirection:
+        type: string
+        description: '排序方向'
+      metadataLogicType:
+        type: string
+        description: 'metadata 条件逻辑（AND/OR），默认 AND'
+      metadataFilterList:
+        type: array
+        description: 'metadata 过滤条件列表'
+    query:
+      folderId: '{{input.folderId}}'
+      page: '{{input.page}}'
+      size: '{{input.size}}'
+      keyword: '{{input.keyword}}'
+      type: '{{input.type}}'
+      fileTypeFilter: '{{input.fileTypeFilter}}'
+      sortField: '{{input.sortField}}'
+      sortDirection: '{{input.sortDirection}}'
+    body:
+      metadataLogicType: '{{input.metadataLogicType}}'
+      metadataFilterList: '{{input.metadataFilterList}}'
+    responseDataPath: '$'
+
+  - key: renameFolder
+    name: '重命名文件夹'
+    method: PUT
+    url: '{{base}}/assets/folder/rename'
+    auth: true
+    input:
+      folderId:
+        type: string
+        description: '目录ID'
+        required: true
+      newName:
+        type: string
+        description: '新名称'
+        required: true
+      version:
+        type: integer
+        description: '当前目录版本（乐观锁）'
+        required: true
+      parentVersion:
+        type: integer
+        description: '父级目录版本（乐观锁）'
+        required: true
+    body:
+      folderId: '{{input.folderId}}'
+      newName: '{{input.newName}}'
+      version: '{{input.version}}'
+      parentVersion: '{{input.parentVersion}}'
+    responseDataPath: '$'
+
+  - key: saveFolder
+    name: '新增目录'
+    method: PUT
+    url: '{{base}}/assets/folder/save'
+    auth: true
+    input:
+      parentId:
+        type: string
+        description: '父级目录id（0表示Home目录）'
+        required: true
+      name:
+        type: string
+        description: '当前目录名称'
+        required: true
+      parentVersion:
+        type: integer
+        description: '父级目录版本（乐观锁）'
+        required: true
+    body:
+      parentId: '{{input.parentId}}'
+      name: '{{input.name}}'
+      parentVersion: '{{input.parentVersion}}'
+    responseDataPath: '$'
+
+  - key: listManualKnowledgeBase
+    name: '查询文件可手动解析的目标知识库'
+    method: GET
+    url: '{{base}}/assets/knowledgeSync/file/{{input.assetsId}}/knowledgeBase/list'
+    auth: true
+    input:
+      assetsId:
+        type: string
+        description: '资产文件id'
+        required: true
+    responseDataPath: '$'
+
+  - key: listManualSkill
+    name: '查询文件在目标知识库下可选择的解析工作流'
+    method: GET
+    url: '{{base}}/assets/knowledgeSync/file/{{input.assetsId}}/skill/list'
+    auth: true
+    input:
+      assetsId:
+        type: string
+        description: '资产文件id'
+        required: true
+      knowledgeBaseId:
+        type: string
+        description: '知识库id'
+        required: true
+    query:
+      knowledgeBaseId: '{{input.knowledgeBaseId}}'
+    responseDataPath: '$'
+
+  - key: parseFileToKnowledgeBase
+    name: '手动解析文件至指定知识库'
+    method: POST
+    url: '{{base}}/assets/knowledgeSync/file/parse'
+    auth: true
+    input:
+      assetsId:
+        type: string
+        description: '资产文件id'
+        required: true
+      knowledgeBaseId:
+        type: string
+        description: '目标知识库id'
+        required: true
+      skillId:
+        type: string
+        description: '文件解析工作流id'
+        required: true
+    body:
+      assetsId: '{{input.assetsId}}'
+      knowledgeBaseId: '{{input.knowledgeBaseId}}'
+      skillId: '{{input.skillId}}'
+    responseDataPath: '$'
+
+  - key: readOutputSchema
+    name: '查询Pro知识库文件解析输出结构'
+    method: GET
+    url: '{{base}}/assets/knowledgeSync/knowledgeBase/{{input.knowledgeBaseId}}/outputSchema'
+    auth: true
+    input:
+      knowledgeBaseId:
+        type: string
+        description: '知识库id'
+        required: true
+    responseDataPath: '$'
+
+  - key: pageParseRecord
+    name: '分页查询Assets知识库解析记录'
+    method: GET
+    url: '{{base}}/assets/knowledgeSync/parseRecord/page'
+    auth: true
+    input:
+      page:
+        type: integer
+        description: '页码'
+        required: true
+      size:
+        type: integer
+        description: '每页返回数据记录数, 最大值1000'
+        required: true
+      assetsId:
+        type: string
+        description: '资产文件id'
+      folderId:
+        type: string
+        description: '文件夹id'
+      knowledgeBaseId:
+        type: string
+        description: '知识库id'
+      skillId:
+        type: string
+        description: '文件解析工作流技能id'
+      status:
+        type: string
+        description: '解析状态'
+      sortField:
+        type: string
+        description: '排序字段'
+      sortDirection:
+        type: string
+        description: '排序方向'
+    query:
+      page: '{{input.page}}'
+      size: '{{input.size}}'
+      assetsId: '{{input.assetsId}}'
+      folderId: '{{input.folderId}}'
+      knowledgeBaseId: '{{input.knowledgeBaseId}}'
+      skillId: '{{input.skillId}}'
+      status: '{{input.status}}'
+      sortField: '{{input.sortField}}'
+      sortDirection: '{{input.sortDirection}}'
+    responseDataPath: '$'
+
+  - key: saveRule
+    name: '保存文件夹知识库同步规则'
+    method: POST
+    url: '{{base}}/assets/knowledgeSync/rule'
+    auth: true
+    input:
+      folderId:
+        type: string
+        description: '文件夹id'
+        required: true
+      enabled:
+        type: boolean
+        description: '是否开启同步'
+        required: true
+      applySub:
+        type: boolean
+        description: '是否应用子文件夹'
+        required: true
+      enabledDeleteChunk:
+        type: boolean
+        description: '是否同步删除chunks'
+        required: true
+      executeStrategy:
+        type: string
+        description: '执行策略，MATCHED_FILE_TYPE / BEST_MATCH_FILE_TYPE'
+        required: true
+      skillList:
+        type: array
+        description: '规则关联文件解析工作流集合'
+    body:
+      folderId: '{{input.folderId}}'
+      enabled: '{{input.enabled}}'
+      applySub: '{{input.applySub}}'
+      enabledDeleteChunk: '{{input.enabledDeleteChunk}}'
+      executeStrategy: '{{input.executeStrategy}}'
+      skillList: '{{input.skillList}}'
+    responseDataPath: '$'
+
+  - key: readFolderRule
+    name: '查询文件夹知识库同步规则'
+    method: GET
+    url: '{{base}}/assets/knowledgeSync/rule/folder/{{input.folderId}}'
+    auth: true
+    input:
+      folderId:
+        type: string
+        description: '文件夹id'
+        required: true
+    responseDataPath: '$'
+
+  - key: deleteFolderRule
+    name: '删除文件夹当前知识库同步规则'
+    method: DELETE
+    url: '{{base}}/assets/knowledgeSync/rule/folder/{{input.folderId}}'
+    auth: true
+    input:
+      folderId:
+        type: string
+        description: '文件夹id'
+        required: true
+    responseDataPath: '$'
+
+  - key: listOutputKnowledgeBase
+    name: '查询文件解析工作流输出知识库配置'
+    method: GET
+    url: '{{base}}/assets/knowledgeSync/skill/{{input.skillId}}/outputKnowledgeBase'
+    auth: true
+    input:
+      skillId:
+        type: string
+        description: '文件解析工作流技能id'
+        required: true
+    responseDataPath: '$'
+
+  - key: saveOutputKnowledgeBase
+    name: '保存文件解析工作流输出知识库配置'
+    method: POST
+    url: '{{base}}/assets/knowledgeSync/skill/outputKnowledgeBase'
+    auth: true
+    input:
+      skillId:
+        type: string
+        description: '文件解析工作流技能id'
+        required: true
+      knowledgeBaseList:
+        type: array
+        description: '输出目标知识库集合'
+    body:
+      skillId: '{{input.skillId}}'
+      knowledgeBaseList: '{{input.knowledgeBaseList}}'
+    responseDataPath: '$'
+
+  - key: deleteBatchField
+    name: '批量删除元数据字段'
+    method: DELETE
+    url: '{{base}}/assets/metadata/field/deleteBatch'
+    auth: true
+    input:
+      idList:
+        type: array
+        description: 'id集合'
+    query:
+      idList: '{{input.idList}}'
+    responseDataPath: '$'
+
+  - key: exportField
+    name: '导出元数据字段'
+    method: GET
+    url: '{{base}}/assets/metadata/field/export'
+    auth: true
+    input:
+      planType:
+        type: string
+        description: '模式类型'
+        required: true
+      idList:
+        type: array
+        description: '字段ID列表'
+    query:
+      planType: '{{input.planType}}'
+      idList: '{{input.idList}}'
+    responseDataPath: '$'
+
+  - key: getField
+    name: '获取元数据字段'
+    method: GET
+    url: '{{base}}/assets/metadata/field/getField'
+    auth: true
+    input:
+      id:
+        type: string
+        description: '元数据字段ID'
+        required: true
+      planType:
+        type: string
+        description: '模式类型'
+        required: true
+    query:
+      id: '{{input.id}}'
+      planType: '{{input.planType}}'
+    responseDataPath: '$'
+
+  - key: getTagList
+    name: '获取当前用户可读取的标签列表'
+    method: GET
+    url: '{{base}}/assets/metadata/field/getTagList'
+    auth: true
+    responseDataPath: '$'
+
+  - key: importField
+    name: '导入元数据字段'
+    method: POST
+    url: '{{base}}/assets/metadata/field/import/json'
+    auth: true
+    input:
+      planType:
+        type: string
+        description: '模式类型'
+        required: true
+      file:
+        type: string
+        description: '元数据JSON文件'
+        required: true
+    query:
+      planType: '{{input.planType}}'
+      file: '{{input.file}}'
+    responseDataPath: '$'
+
+  - key: getMetadataFieldOptional
+    name: '获取元数据字段下拉列表'
+    method: GET
+    url: '{{base}}/assets/metadata/field/optional'
+    auth: true
+    input:
+      fileId:
+        type: string
+        description: '文件ID'
+      path:
+        type: string
+        description: '文件夹目录路径，例如 /Home/项目/设计'
+    query:
+      fileId: '{{input.fileId}}'
+      path: '{{input.path}}'
+    responseDataPath: '$'
+
+  - key: pageField
+    name: '分页查询'
+    method: GET
+    url: '{{base}}/assets/metadata/field/page'
+    auth: true
+    input:
+      page:
+        type: integer
+        description: '页码'
+        required: true
+      size:
+        type: integer
+        description: '每页返回数据记录数, 最大值1000'
+        required: true
+      name:
+        type: string
+        description: '字段名称'
+      fieldType:
+        type: string
+        description: '字段类型'
+      planType:
+        type: string
+        description: '模式类型'
+      sortField:
+        type: string
+        description: '排序字段'
+      sortDirection:
+        type: string
+        description: '排序方向'
+    query:
+      page: '{{input.page}}'
+      size: '{{input.size}}'
+      name: '{{input.name}}'
+      fieldType: '{{input.fieldType}}'
+      planType: '{{input.planType}}'
+      sortField: '{{input.sortField}}'
+      sortDirection: '{{input.sortDirection}}'
+    responseDataPath: '$'
+
+  - key: saveField
+    name: '新增元数据字段'
+    method: PUT
+    url: '{{base}}/assets/metadata/field/save'
+    auth: true
+    input:
+      name:
+        type: string
+        description: '元数据字段名称'
+        required: true
+      description:
+        type: string
+        description: '元数据字段枚举项描述'
+      type:
+        type: string
+        description: '字段类型'
+        required: true
+      enumOptionList:
+        type: array
+        description: '枚举选项'
+      planType:
+        type: string
+        description: '模式类型'
+    body:
+      name: '{{input.name}}'
+      description: '{{input.description}}'
+      type: '{{input.type}}'
+      enumOptionList: '{{input.enumOptionList}}'
+      planType: '{{input.planType}}'
+    responseDataPath: '$'
+
+  - key: updateField
+    name: '修改元数据字段'
+    method: POST
+    url: '{{base}}/assets/metadata/field/update'
+    auth: true
+    input:
+      id:
+        type: string
+        description: '元数据字段枚举项id'
+      name:
+        type: string
+        description: '元数据字段名称'
+        required: true
+      description:
+        type: string
+        description: '元数据字段枚举项描述'
+      type:
+        type: string
+        description: '字段类型'
+        required: true
+      planType:
+        type: string
+        description: '模式类型'
+        required: true
+      enumOptionList:
+        type: array
+        description: '枚举选项'
+    body:
+      id: '{{input.id}}'
+      name: '{{input.name}}'
+      description: '{{input.description}}'
+      type: '{{input.type}}'
+      planType: '{{input.planType}}'
+      enumOptionList: '{{input.enumOptionList}}'
+    responseDataPath: '$'
+
+  - key: deleteMetadataSetting
+    name: '删除元数据展示配置'
+    method: DELETE
+    url: '{{base}}/assets/metadata/setting/delete/{{input.id}}'
+    auth: true
+    input:
+      id:
+        type: string
+        description: '展示配置主键'
+        required: true
+    responseDataPath: '$'
+
+  - key: pageMetadataSetting
+    name: '分页查询元数据展示配置'
+    method: GET
+    url: '{{base}}/assets/metadata/setting/page'
+    auth: true
+    input:
+      page:
+        type: integer
+        description: '页码'
+        required: true
+      size:
+        type: integer
+        description: '每页返回数据记录数, 最大值1000'
+        required: true
+      sortField:
+        type: string
+        description: '排序字段'
+      sortDirection:
+        type: string
+        description: '排序方向'
+    query:
+      page: '{{input.page}}'
+      size: '{{input.size}}'
+      sortField: '{{input.sortField}}'
+      sortDirection: '{{input.sortDirection}}'
+    responseDataPath: '$'
+
+  - key: saveMetadataSetting
+    name: '新增元数据展示配置'
+    method: PUT
+    url: '{{base}}/assets/metadata/setting/save'
+    auth: true
+    input:
+      assetsMetadataId:
+        type: string
+        description: '元数据字段ID'
+        required: true
+    body:
+      assetsMetadataId: '{{input.assetsMetadataId}}'
+    responseDataPath: '$'
+
+  - key: updateMetadataSettingSort
+    name: '更新元数据展示配置排序'
+    method: POST
+    url: '{{base}}/assets/metadata/setting/updateSort'
+    auth: true
+    input:
+      id:
+        type: string
+        description: '当前展示配置主键'
+        required: true
+      previousId:
+        type: string
+        description: '前置展示配置主键，为空时移动到首位'
+    body:
+      id: '{{input.id}}'
+      previousId: '{{input.previousId}}'
+    responseDataPath: '$'
+
+  - key: getRuleGroupDetail
+    name: '根据ID查询规则组详情'
+    method: GET
+    url: '{{base}}/assets/rule/group/{{input.id}}'
+    auth: true
+    input:
+      id:
+        type: string
+        description: '规则组ID'
+        required: true
+    responseDataPath: '$'
+
+  - key: deleteBatchRuleGroup
+    name: '批量删除规则组'
+    method: DELETE
+    url: '{{base}}/assets/rule/group/deleteBatch'
+    auth: true
+    input:
+      idList:
+        type: array
+        description: 'id列表'
+        required: true
+    query:
+      idList: '{{input.idList}}'
+    responseDataPath: '$'
+
+  - key: pageRuleGroup
+    name: '分页查询'
+    method: GET
+    url: '{{base}}/assets/rule/group/page'
+    auth: true
+    input:
+      page:
+        type: integer
+        description: '页码'
+        required: true
+      size:
+        type: integer
+        description: '每页返回数据记录数, 最大值1000'
+        required: true
+      name:
+        type: string
+        description: '规则名称'
+      sortField:
+        type: string
+        description: '排序字段'
+      sortDirection:
+        type: string
+        description: '排序方向'
+    query:
+      page: '{{input.page}}'
+      size: '{{input.size}}'
+      name: '{{input.name}}'
+      sortField: '{{input.sortField}}'
+      sortDirection: '{{input.sortDirection}}'
+    responseDataPath: '$'
+
+  - key: saveRuleGroup
+    name: '新增规则组'
+    method: POST
+    url: '{{base}}/assets/rule/group/save'
+    auth: true
+    input:
+      name:
+        type: string
+        description: '规则名称'
+        required: true
+      description:
+        type: string
+        description: '规则描述'
+      prompt:
+        type: string
+        description: '规则prompt模板'
+      conditionGroupList:
+        type: array
+        description: '规则条件组列表'
+        required: true
+      metadataFieldIdList:
+        type: array
+        description: '自动执行标签组id列表'
+        required: true
+    body:
+      name: '{{input.name}}'
+      description: '{{input.description}}'
+      prompt: '{{input.prompt}}'
+      conditionGroupList: '{{input.conditionGroupList}}'
+      metadataFieldIdList: '{{input.metadataFieldIdList}}'
+    responseDataPath: '$'
+
+  - key: updateRuleGroup
+    name: '修改规则组'
+    method: PUT
+    url: '{{base}}/assets/rule/group/update'
+    auth: true
+    input:
+      id:
+        type: string
+        description: '条件id'
+      name:
+        type: string
+        description: '规则名称'
+      description:
+        type: string
+        description: '规则描述'
+      prompt:
+        type: string
+        description: '规则prompt模板'
+      conditionGroupList:
+        type: array
+        description: '规则条件组列表'
+      metadataFieldIdList:
+        type: array
+        description: '关联的元数据字段ID列表'
+    body:
+      id: '{{input.id}}'
+      name: '{{input.name}}'
+      description: '{{input.description}}'
+      prompt: '{{input.prompt}}'
+      conditionGroupList: '{{input.conditionGroupList}}'
+      metadataFieldIdList: '{{input.metadataFieldIdList}}'
+    responseDataPath: '$'
+
+  - key: saveShare
+    name: '新增直接分享'
+    method: POST
+    url: '{{base}}/assets/share'
+    auth: true
+    input:
+      targetType:
+        type: string
+        description: '可用值:FOLDER,FILE'
+        required: true
+      targetId:
+        type: string
+        description: 'targetId'
+        required: true
+      userId:
+        type: string
+        description: 'userId'
+        required: true
+      presetType:
+        type: string
+        description: '可用值:INHERIT,NONE,VIEW,DOWNLOAD,UPLOAD,EDIT,MANAGE,SYNC,CUSTOM'
+        required: true
+    body:
+      targetType: '{{input.targetType}}'
+      targetId: '{{input.targetId}}'
+      userId: '{{input.userId}}'
+      presetType: '{{input.presetType}}'
+    responseDataPath: '$'
+
+  - key: updateShare
+    name: '修改直接分享'
+    method: PUT
+    url: '{{base}}/assets/share'
+    auth: true
+    input:
+      targetType:
+        type: string
+        description: '可用值:FOLDER,FILE'
+        required: true
+      targetId:
+        type: string
+        description: 'targetId'
+        required: true
+      userId:
+        type: string
+        description: 'userId'
+        required: true
+      presetType:
+        type: string
+        description: '可用值:INHERIT,NONE,VIEW,DOWNLOAD,UPLOAD,EDIT,MANAGE,SYNC,CUSTOM'
+        required: true
+      grantId:
+        type: string
+        description: 'grantId'
+        required: true
+      version:
+        type: integer
+        description: 'version'
+        required: true
+    body:
+      targetType: '{{input.targetType}}'
+      targetId: '{{input.targetId}}'
+      userId: '{{input.userId}}'
+      presetType: '{{input.presetType}}'
+      grantId: '{{input.grantId}}'
+      version: '{{input.version}}'
+    responseDataPath: '$'
+
+  - key: deleteShare
+    name: '删除直接分享'
+    method: DELETE
+    url: '{{base}}/assets/share'
+    auth: true
+    input:
+      targetType:
+        type: string
+        description: '可用值:FOLDER,FILE'
+        required: true
+      targetId:
+        type: string
+        description: 'targetId'
+        required: true
+      grantId:
+        type: string
+        description: 'grantId'
+        required: true
+      version:
+        type: integer
+        description: 'version'
+        required: true
+    body:
+      targetType: '{{input.targetType}}'
+      targetId: '{{input.targetId}}'
+      grantId: '{{input.grantId}}'
+      version: '{{input.version}}'
+    responseDataPath: '$'
+
+  - key: pageShare
+    name: '分页查询目标上的直接分享'
+    method: GET
+    url: '{{base}}/assets/share/page'
+    auth: true
+    input:
+      targetType:
+        type: string
+        description: '目标类型'
+        required: true
+      targetId:
+        type: string
+        description: '目标ID，文件夹0表示Home根目录'
+        required: true
+      page:
+        type: integer
+        description: '页码'
+        required: true
+      size:
+        type: integer
+        description: '每页返回数据记录数, 最大值1000'
+        required: true
+      sortField:
+        type: string
+        description: '排序字段'
+      sortDirection:
+        type: string
+        description: '排序方向'
+    query:
+      targetType: '{{input.targetType}}'
+      targetId: '{{input.targetId}}'
+      page: '{{input.page}}'
+      size: '{{input.size}}'
+      sortField: '{{input.sortField}}'
+      sortDirection: '{{input.sortDirection}}'
+    responseDataPath: '$'
+
+  - key: pageCandidateUser
+    name: '分页查询可以分享的用户'
+    method: GET
+    url: '{{base}}/assets/share/user/page'
+    auth: true
+    input:
+      targetType:
+        type: string
+        description: '目标类型'
+        required: true
+      targetId:
+        type: string
+        description: '目标ID，文件夹0表示Home根目录'
+        required: true
+      page:
+        type: integer
+        description: '页码'
+        required: true
+      size:
+        type: integer
+        description: '每页返回数据记录数, 最大值1000'
+        required: true
+      keyword:
+        type: string
+        description: '用户名或昵称关键词'
+      sortField:
+        type: string
+        description: '排序字段'
+      sortDirection:
+        type: string
+        description: '排序方向'
+    query:
+      targetType: '{{input.targetType}}'
+      targetId: '{{input.targetId}}'
+      page: '{{input.page}}'
+      size: '{{input.size}}'
+      keyword: '{{input.keyword}}'
+      sortField: '{{input.sortField}}'
+      sortDirection: '{{input.sortDirection}}'
+    responseDataPath: '$'

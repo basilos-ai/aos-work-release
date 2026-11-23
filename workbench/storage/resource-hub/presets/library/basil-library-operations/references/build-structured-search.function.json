@@ -1,0 +1,161 @@
+{
+  "type": "function",
+  "function": {
+    "name": "build_structured_search",
+    "description": "Emit an intermediate search plan using current-user LITE Metadata. For targeted refinement, preserve the accepted plan's Metadata conditions/logic and scope, clear keyword, add confirmed FILE_ID IN values, and reset page to 1. CLI validates and converts; never invent IDs or enum values.",
+    "parameters": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "keyword": {
+          "type": "string",
+          "description": "All user search meaning not reliably mapped to Metadata during ordinary search; empty for confirmed FILE_ID refinement."
+        },
+        "metadataLogic": {
+          "type": "string",
+          "enum": [
+            "AND",
+            "OR"
+          ],
+          "default": "AND",
+          "description": "OR only for an explicit user alternative."
+        },
+        "metadataConditions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "fieldId",
+              "value",
+              "sourceText"
+            ],
+            "properties": {
+              "fieldId": {
+                "type": "string",
+                "pattern": "^[0-9]+$",
+                "description": "Exact decimal ID from /field/page; keep all int64 digits as a string, never use Number() or parseInt()."
+              },
+              "value": {
+                "type": "array",
+                "minItems": 1,
+                "description": "For SINGLE_SELECT/MULTI_SELECT, exact enumOptionList.value labels; CLI resolves them to integer option IDs. Other Metadata uses literal strings.",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "sourceText": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "spaceType": {
+          "type": "string",
+          "enum": [
+            "",
+            "MY",
+            "TEAM",
+            "SHARED"
+          ]
+        },
+        "folderPath": {
+          "type": "string"
+        },
+        "includeSubfolders": {
+          "type": "boolean"
+        },
+        "fileTypeFilter": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "ALL",
+              "IMAGE",
+              "VIDEO",
+              "DOC",
+              "FOLDER"
+            ]
+          }
+        },
+        "filterConditions": {
+          "type": "array",
+          "description": "CREATED_AT/UPDATED_AT/FILE_SIZE use GT/LT (one value) or BETWEEN (two). MIME_SUB_TYPE/DOC_SUB_TYPE use EQUALS/NOT_EQUALS (one) or IN/NOT_IN (one or more), with server subtype codes. FILE_ID uses only IN with non-empty decimal-string int64 IDs from reviewed candidates; CLI deduplicates without precision loss. FILE_ID intersects the preserved Metadata expression, including when metadataLogic is OR. Never use Metadata pseudo-fields.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "fieldType",
+              "operator",
+              "value"
+            ],
+            "properties": {
+              "fieldType": {
+                "type": "string",
+                "enum": [
+                  "CREATED_AT",
+                  "UPDATED_AT",
+                  "FILE_SIZE",
+                  "MIME_SUB_TYPE",
+                  "DOC_SUB_TYPE",
+                  "FILE_ID"
+                ]
+              },
+              "operator": {
+                "type": "string",
+                "enum": [
+                  "GT",
+                  "LT",
+                  "BETWEEN",
+                  "EQUALS",
+                  "NOT_EQUALS",
+                  "IN",
+                  "NOT_IN"
+                ]
+              },
+              "value": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "page": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "sortRule": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "previewableTypeOrder": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "IMAGE",
+                  "DOC",
+                  "VIDEO"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "required": [
+        "keyword",
+        "metadataLogic",
+        "metadataConditions"
+      ]
+    }
+  }
+}

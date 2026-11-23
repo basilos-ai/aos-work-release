@@ -1,0 +1,527 @@
+schemaVersion: 1
+
+plugin:
+  key: cloud.tyrion.workbench.multidimensional-table
+  name: Base
+  version: 1.0.0
+  providerType: official
+  description: >-
+    Manage Base tables and records through the current user's
+    BasilOS authorization.
+  hasIframe: false
+
+app:
+  key: multidimensional-table
+  entryPath: /multidimensional-table
+  authProviderKey: basilos
+
+variables:
+  base: 'https://{{AOS_STUDIO_DOMAIN: {"title":"AOS Studio Domain","description":"The domain name of the AOS Studio environment, including its domain suffix. Enter only the hostname, without https:// or an API path.","placeholder":"studio.example.com"}}}/typekey/api/v1'
+
+auth:
+  type: oauth2
+  oauth2:
+    authorizeUrl: 'https://{{AOS_STUDIO_DOMAIN: {"title":"AOS Studio Domain","description":"The domain name of the AOS Studio environment, including its domain suffix. Enter only the hostname, without https:// or an API path.","placeholder":"studio.example.com"}}}/typekey/api/v1/oauth2/authorize'
+    tokenUrl: 'https://{{AOS_STUDIO_DOMAIN: {"title":"AOS Studio Domain","description":"The domain name of the AOS Studio environment, including its domain suffix. Enter only the hostname, without https:// or an API path.","placeholder":"studio.example.com"}}}/typekey/api/v1/oauth2/token'
+    refreshUrl: 'https://{{AOS_STUDIO_DOMAIN: {"title":"AOS Studio Domain","description":"The domain name of the AOS Studio environment, including its domain suffix. Enter only the hostname, without https:// or an API path.","placeholder":"studio.example.com"}}}/typekey/api/v1/oauth2/token'
+    userInfoUrl: 'https://{{AOS_STUDIO_DOMAIN: {"title":"AOS Studio Domain","description":"The domain name of the AOS Studio environment, including its domain suffix. Enter only the hostname, without https:// or an API path.","placeholder":"studio.example.com"}}}/typekey/api/v1/oauth2/userinfo'
+    unbindUrl: 'https://{{AOS_STUDIO_DOMAIN: {"title":"AOS Studio Domain","description":"The domain name of the AOS Studio environment, including its domain suffix. Enter only the hostname, without https:// or an API path.","placeholder":"studio.example.com"}}}/typekey/api/v1/oauth2/bindings/current'
+    redirectUri: 'https://{{AOS_WORK_DOMAIN: {"title":"AOS Work Domain","description":"The domain name of the AOS Work (formerly Workbench) environment, including its domain suffix. Enter only the hostname, without https:// or a URL path.","placeholder":"work.example.com"}}}/basilcraw/api/apps/oauth2/callback'
+    resultBaseUrl: 'https://{{AOS_WORK_DOMAIN: {"title":"AOS Work Domain","description":"The domain name of the AOS Work (formerly Workbench) environment, including its domain suffix. Enter only the hostname, without https:// or a URL path.","placeholder":"work.example.com"}}}'
+    scopes:
+      - id
+      - username
+      - nickname
+      - email
+    options:
+      scopeSeparator: space
+      tokenRequestType: form
+      clientAuthMethod: basic
+      pkce: true
+    tokenFields:
+      accessToken: access_token
+      refreshToken: refresh_token
+      tokenType: token_type
+      expiresIn: expires_in
+    tokenPlacement:
+      type: bearer
+    account:
+      action: getCurrentUser
+      idField: id
+      nameField: username
+
+actions:
+  - key: getCurrentUser
+    name: Get current user
+    method: GET
+    url: '{{base}}/oauth2/userinfo'
+    auth: true
+    responseDataPath: '$'
+
+  - key: open
+    name: Open Base
+    method: GET
+    url: 'https://{{AOS_WORK_DOMAIN: {"title":"AOS Work Domain","description":"The domain name of the AOS Work (formerly Workbench) environment, including its domain suffix. Enter only the hostname, without https:// or a URL path.","placeholder":"work.example.com"}}}/multidimensional-table'
+    auth: false
+
+  - key: saveBase
+    name: 创建 Base
+    method: POST
+    url: '{{base}}/base'
+    auth: true
+    input:
+      name:
+        type: string
+        description: 名称
+        required: true
+      description:
+        type: string
+        description: 描述
+      icon:
+        type: string
+        description: 图标
+    body:
+      name: '{{input.name}}'
+      description: '{{input.description}}'
+      icon: '{{input.icon}}'
+    responseDataPath: '$'
+
+  - key: updateBase
+    name: 更新 Base
+    method: PUT
+    url: '{{base}}/base'
+    auth: true
+    input:
+      id:
+        type: string
+        description: Base 主键
+        required: true
+      name:
+        type: string
+        description: 名称
+        required: true
+      description:
+        type: string
+        description: 描述
+      icon:
+        type: string
+        description: 图标
+    body:
+      id: '{{input.id}}'
+      name: '{{input.name}}'
+      description: '{{input.description}}'
+      icon: '{{input.icon}}'
+    responseDataPath: '$'
+
+  - key: readBase
+    name: 查询 Base 详情
+    method: GET
+    url: '{{base}}/base/{{input.id}}'
+    auth: true
+    input:
+      id:
+        type: string
+        description: Base 主键
+        required: true
+    responseDataPath: '$'
+
+  - key: deleteBase
+    name: 删除 Base
+    method: DELETE
+    url: '{{base}}/base/{{input.id}}'
+    auth: true
+    input:
+      id:
+        type: string
+        description: Base 主键
+        required: true
+    responseDataPath: '$'
+
+  - key: changeRankIndex
+    name: 移动 Base 排序
+    method: POST
+    url: '{{base}}/base/changeRankIndex'
+    auth: true
+    input:
+      id:
+        type: string
+        description: 需要移动的数据主键
+        required: true
+      anchorId:
+        type: string
+        description: 锚点数据主键
+        required: true
+      position:
+        type: string
+        description: 移动位置，BEFORE 或 AFTER
+        required: true
+    body:
+      id: '{{input.id}}'
+      anchorId: '{{input.anchorId}}'
+      position: '{{input.position}}'
+    responseDataPath: '$'
+
+  - key: exchangeRankIndex
+    name: 交换 Base 排序
+    method: POST
+    url: '{{base}}/base/exchangeRankIndex'
+    auth: true
+    input:
+      id:
+        type: string
+        description: Base 主键
+        required: true
+      anotherId:
+        type: string
+        description: 另一个 Base 主键
+        required: true
+    query:
+      id: '{{input.id}}'
+      anotherId: '{{input.anotherId}}'
+    responseDataPath: '$'
+
+  - key: pageBase
+    name: 分页查询 Base
+    method: GET
+    url: '{{base}}/base/page'
+    auth: true
+    input:
+      page:
+        type: integer
+        description: 页数
+        required: true
+      size:
+        type: integer
+        description: 返回数据记录数，最大值 1000
+        required: true
+      keyword:
+        type: string
+        description: 关键词
+    query:
+      page: '{{input.page}}'
+      size: '{{input.size}}'
+      keyword: '{{input.keyword}}'
+    responseDataPath: '$'
+
+  - key: aggregateRecord
+    name: 聚合记录
+    method: GET
+    url: '{{base}}/record/aggregation'
+    auth: true
+    input:
+      tableId:
+        type: string
+        description: 表 ID
+        required: true
+      viewId:
+        type: string
+        description: 视图 ID
+      ignoreViewQuery:
+        type: boolean
+        description: 是否忽略视图查询配置
+      fieldKeyType:
+        type: string
+        description: 字段 Key 类型，ID、NAME 或 DB_FIELD_NAME
+      filter:
+        type: string
+        description: 筛选 JSON
+      orderBy:
+        type: string
+        description: 排序 JSON
+      groupBy:
+        type: string
+        description: 分组 JSON
+      collapsedGroupIds:
+        type: string
+        description: 折叠分组 ID JSON
+      search:
+        type: array
+        description: 搜索参数
+      selectedRecordIds:
+        type: array
+        description: 指定记录 ID 列表
+      aggregations:
+        type: string
+        description: 聚合函数字段映射 JSON
+    query:
+      tableId: '{{input.tableId}}'
+      viewId: '{{input.viewId}}'
+      ignoreViewQuery: '{{input.ignoreViewQuery}}'
+      fieldKeyType: '{{input.fieldKeyType}}'
+      filter: '{{input.filter}}'
+      orderBy: '{{input.orderBy}}'
+      groupBy: '{{input.groupBy}}'
+      collapsedGroupIds: '{{input.collapsedGroupIds}}'
+      search: '{{input.search}}'
+      selectedRecordIds: '{{input.selectedRecordIds}}'
+      aggregations: '{{input.aggregations}}'
+    responseDataPath: '$'
+
+  - key: batchSaveRecordList
+    name: 批量保存记录
+    method: POST
+    url: '{{base}}/record/batchSaveRecordList'
+    auth: true
+    input:
+      tableId:
+        type: string
+        description: 表 ID
+        required: true
+      fieldKeyType:
+        type: string
+        description: 字段 Key 类型，ID、NAME 或 DB_FIELD_NAME
+      typecast:
+        type: boolean
+        description: 是否允许自动类型转换
+      records:
+        type: array
+        description: 记录列表
+        required: true
+    body:
+      tableId: '{{input.tableId}}'
+      fieldKeyType: '{{input.fieldKeyType}}'
+      typecast: '{{input.typecast}}'
+      records: '{{input.records}}'
+    responseDataPath: '$'
+
+  - key: batchUpdateRecordList
+    name: 批量更新记录
+    method: PUT
+    url: '{{base}}/record/batchUpdateRecordList'
+    auth: true
+    input:
+      tableId:
+        type: string
+        description: 表 ID
+        required: true
+      fieldKeyType:
+        type: string
+        description: 字段 Key 类型，ID、NAME 或 DB_FIELD_NAME
+      typecast:
+        type: boolean
+        description: 是否允许自动类型转换
+      records:
+        type: array
+        description: 更新记录列表，每项包含 recordId 和 fields
+        required: true
+    body:
+      tableId: '{{input.tableId}}'
+      fieldKeyType: '{{input.fieldKeyType}}'
+      typecast: '{{input.typecast}}'
+      records: '{{input.records}}'
+    responseDataPath: '$'
+
+  - key: deleteRecord
+    name: 删除记录
+    method: DELETE
+    url: '{{base}}/record/deleteRecord'
+    auth: true
+    input:
+      tableId:
+        type: string
+        description: 表 ID
+        required: true
+      recordId:
+        type: string
+        description: 记录 ID
+        required: true
+    query:
+      tableId: '{{input.tableId}}'
+      recordId: '{{input.recordId}}'
+    responseDataPath: '$'
+
+  - key: deleteRecordList
+    name: 批量删除记录
+    method: DELETE
+    url: '{{base}}/record/deleteRecordList'
+    auth: true
+    input:
+      tableId:
+        type: string
+        description: 表 ID
+        required: true
+      recordIds:
+        type: array
+        description: 记录 ID 列表
+        required: true
+    body:
+      tableId: '{{input.tableId}}'
+      recordIds: '{{input.recordIds}}'
+    responseDataPath: '$'
+
+  - key: listFieldValue
+    name: 获取指定字段的枚举值
+    method: GET
+    url: '{{base}}/record/fieldEnumValueList'
+    auth: true
+    input:
+      tableId:
+        type: string
+        description: 表 ID
+        required: true
+      fieldId:
+        type: string
+        description: 字段 Key，默认按字段 ID 解析
+        required: true
+      fieldKeyType:
+        type: string
+        description: 字段 Key 类型，ID、NAME 或 DB_FIELD_NAME
+      limit:
+        type: integer
+        description: 返回数量限制，最大值 1000
+    query:
+      tableId: '{{input.tableId}}'
+      fieldId: '{{input.fieldId}}'
+      fieldKeyType: '{{input.fieldKeyType}}'
+      limit: '{{input.limit}}'
+    responseDataPath: '$'
+
+  - key: queryRecord
+    name: 查询记录
+    method: GET
+    url: '{{base}}/record/queryRecord'
+    auth: true
+    input:
+      tableId:
+        type: string
+        description: 表 ID
+        required: true
+      viewId:
+        type: string
+        description: 视图 ID
+      ignoreViewQuery:
+        type: boolean
+        description: 是否忽略视图查询配置
+      fieldKeyType:
+        type: string
+        description: 字段 Key 类型，ID、NAME 或 DB_FIELD_NAME
+      cellFormat:
+        type: string
+        description: 单元格返回格式，JSON 或 TEXT
+      projection:
+        type: array
+        description: 投影字段
+      filter:
+        type: string
+        description: 筛选 JSON
+      orderBy:
+        type: string
+        description: 排序 JSON
+      groupBy:
+        type: string
+        description: 分组 JSON
+      collapsedGroupIds:
+        type: string
+        description: 折叠分组 ID JSON
+      search:
+        type: string
+        description: 搜索参数
+      selectedRecordIds:
+        type: array
+        description: 指定记录 ID 列表
+      skip:
+        type: integer
+        description: 偏移记录数
+      take:
+        type: integer
+        description: 返回数据记录数，最大值 1000
+    query:
+      tableId: '{{input.tableId}}'
+      viewId: '{{input.viewId}}'
+      ignoreViewQuery: '{{input.ignoreViewQuery}}'
+      fieldKeyType: '{{input.fieldKeyType}}'
+      cellFormat: '{{input.cellFormat}}'
+      projection: '{{input.projection}}'
+      filter: '{{input.filter}}'
+      orderBy: '{{input.orderBy}}'
+      groupBy: '{{input.groupBy}}'
+      collapsedGroupIds: '{{input.collapsedGroupIds}}'
+      search: '{{input.search}}'
+      selectedRecordIds: '{{input.selectedRecordIds}}'
+      skip: '{{input.skip}}'
+      take: '{{input.take}}'
+    responseDataPath: '$'
+
+  - key: readRecord
+    name: 读取记录
+    method: GET
+    url: '{{base}}/record/readRecord'
+    auth: true
+    input:
+      tableId:
+        type: string
+        description: 表 ID
+        required: true
+      recordId:
+        type: string
+        description: 记录 ID
+        required: true
+      fieldKeyType:
+        type: string
+        description: 字段 Key 类型，ID、NAME 或 DB_FIELD_NAME
+      cellFormat:
+        type: string
+        description: 单元格返回格式，JSON 或 TEXT
+    query:
+      tableId: '{{input.tableId}}'
+      recordId: '{{input.recordId}}'
+      fieldKeyType: '{{input.fieldKeyType}}'
+      cellFormat: '{{input.cellFormat}}'
+    responseDataPath: '$'
+
+  - key: saveRecord
+    name: 保存记录
+    method: POST
+    url: '{{base}}/record/saveRecord'
+    auth: true
+    input:
+      tableId:
+        type: string
+        description: 表 ID
+      fieldKeyType:
+        type: string
+        description: 字段 Key 类型，ID、NAME 或 DB_FIELD_NAME
+      typecast:
+        type: boolean
+        description: 是否允许自动类型转换
+      fields:
+        type: object
+        description: 记录字段值
+    body:
+      tableId: '{{input.tableId}}'
+      fieldKeyType: '{{input.fieldKeyType}}'
+      typecast: '{{input.typecast}}'
+      fields: '{{input.fields}}'
+    responseDataPath: '$'
+
+  - key: updateRecord
+    name: 更新记录
+    method: PUT
+    url: '{{base}}/record/updateRecord'
+    auth: true
+    input:
+      tableId:
+        type: string
+        description: 表 ID
+        required: true
+      recordId:
+        type: string
+        description: 记录 ID
+        required: true
+      fieldKeyType:
+        type: string
+        description: 字段 Key 类型，ID、NAME 或 DB_FIELD_NAME
+      typecast:
+        type: boolean
+        description: 是否允许自动类型转换
+      fields:
+        type: object
+        description: 记录字段值
+        required: true
+    body:
+      tableId: '{{input.tableId}}'
+      recordId: '{{input.recordId}}'
+      fieldKeyType: '{{input.fieldKeyType}}'
+      typecast: '{{input.typecast}}'
+      fields: '{{input.fields}}'
+    responseDataPath: '$'

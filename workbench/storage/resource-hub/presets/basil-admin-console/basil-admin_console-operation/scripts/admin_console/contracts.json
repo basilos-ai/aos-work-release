@@ -1,0 +1,2287 @@
+{
+  "source": "Admin Console User, Role, and Resource Permission API Documentation.md",
+  "source_date": "2026-10-27",
+  "operations": {
+    "user_page": {
+      "method": "GET",
+      "endpoint": "/system/user/page",
+      "title": "List accounts with pagination",
+      "group": "users",
+      "body_kind": "none",
+      "fields": {
+        "query": {
+          "keyword": {
+            "type": "string",
+            "required": false,
+            "description": "Fuzzy nickname/username keyword",
+            "not_blank": false
+          },
+          "phoneNumber": {
+            "type": "string",
+            "required": false,
+            "description": "Fuzzy phone-number search",
+            "not_blank": false
+          },
+          "nickname": {
+            "type": "string",
+            "required": false,
+            "description": "Fuzzy nickname search",
+            "not_blank": false
+          },
+          "username": {
+            "type": "string",
+            "required": false,
+            "description": "Fuzzy username search",
+            "not_blank": false
+          },
+          "departmentId": {
+            "type": "string(integer)",
+            "required": false,
+            "description": "Direct-department filter, without descendant recursion. Omit for all; 0 queries only direct members of the root department.",
+            "not_blank": false
+          },
+          "page": {
+            "type": "integer",
+            "required": true,
+            "description": "Page number; examples start at 1; frontend pageIndex+1; no @Min in source",
+            "not_blank": false
+          },
+          "size": {
+            "type": "integer",
+            "required": true,
+            "description": "Records per page; @Max(1000), no @Min declared; <=1000",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": false,
+      "destructive": false
+    },
+    "user_create": {
+      "method": "POST",
+      "endpoint": "/system/saveUser",
+      "title": "Create an account",
+      "group": "users",
+      "body_kind": "object",
+      "fields": {
+        "body": {
+          "nickname": {
+            "type": "string",
+            "required": true,
+            "description": "Bean @NotBlank; no backend @Size; UI trims and enforces 1..100; NotBlank(message = \"{required.parameter.error}\")",
+            "not_blank": true
+          },
+          "username": {
+            "type": "string",
+            "required": true,
+            "description": "Bean @NotBlank; business maximum 100 characters; disallows path-reserved characters (backslash, slash, colon, asterisk, question mark, double quote, angle brackets, vertical bar) and duplicate usernames; NotBlank(message = \"{required.parameter.error}\")",
+            "not_blank": true
+          },
+          "departmentIdList": {
+            "type": "string(integer)[]",
+            "required": false,
+            "description": "Optional; null/[] defaults to root department 0; deduplicated; department existence is not explicitly checked here",
+            "not_blank": false
+          },
+          "systemRoleIdList": {
+            "type": "string(integer)[]",
+            "required": false,
+            "description": "Optional; null/[] or all-null defaults to system role 0; filters nulls and deduplicates; effective roles must exist",
+            "not_blank": false
+          },
+          "userPermissionIdList": {
+            "type": "string(integer)[]",
+            "required": false,
+            "description": "Optional; omitted/null saves []; elements must be 114001/114002, with null/invalid elements rejected; valid entries are deduplicated",
+            "not_blank": false
+          },
+          "jobTitle": {
+            "type": "string",
+            "required": false,
+            "description": "Optional string; no explicit length validation",
+            "not_blank": false
+          },
+          "leaderId": {
+            "type": "string(integer)",
+            "required": false,
+            "description": "Optional BigInteger; no explicit existence check in this endpoint",
+            "not_blank": false
+          },
+          "email": {
+            "type": "string",
+            "required": false,
+            "description": "Optional; nonempty values require regex-valid email and length <=320",
+            "not_blank": false
+          },
+          "tenantIdList": {
+            "type": "string(integer)[]",
+            "required": false,
+            "description": "Optional; always adds shared organization 0, then appends requested organizations with deduplication; organization-space membership, not system roles",
+            "not_blank": false
+          },
+          "personalAssets": {
+            "type": "UserPersonalAssetsConfigVO",
+            "required": false,
+            "description": "Optional; created by default even when omitted; if provided, enabled must be true; Valid",
+            "not_blank": false
+          },
+          "personalBase": {
+            "type": "UserPersonalBaseConfigVO",
+            "required": false,
+            "description": "Optional; omission does not create it; if provided, enabled=true and name@NotBlank. At creation, request tenant-id must be an organization containing this user; Valid",
+            "not_blank": true
+          }
+        }
+      },
+      "mutating": true,
+      "destructive": false
+    },
+    "user_batch_create": {
+      "method": "POST",
+      "endpoint": "/system/batchSaveUser",
+      "title": "Create accounts in bulk",
+      "group": "users",
+      "body_kind": "array",
+      "fields": {
+        "body": {
+          "nickname": {
+            "type": "string",
+            "required": true,
+            "description": "Nickname; NotBlank(message = \"{required.parameter.error}\")",
+            "not_blank": true
+          },
+          "username": {
+            "type": "string",
+            "required": true,
+            "description": "Username; NotBlank(message = \"{required.parameter.error}\")",
+            "not_blank": true
+          },
+          "departmentIdList": {
+            "type": "string(integer)[]",
+            "required": false,
+            "description": "Department ID collection",
+            "not_blank": false
+          },
+          "systemRoleIdList": {
+            "type": "string(integer)[]",
+            "required": false,
+            "description": "System-role ID collection",
+            "not_blank": false
+          },
+          "userPermissionIdList": {
+            "type": "string(integer)[]",
+            "required": false,
+            "description": "User-level permission IDs; only 114001 (bulk read) and 114002 (bulk set)",
+            "not_blank": false
+          },
+          "jobTitle": {
+            "type": "string",
+            "required": false,
+            "description": "Job title",
+            "not_blank": false
+          },
+          "leaderId": {
+            "type": "string(integer)",
+            "required": false,
+            "description": "Direct supervisor ID",
+            "not_blank": false
+          },
+          "email": {
+            "type": "string",
+            "required": false,
+            "description": "Email",
+            "not_blank": false
+          },
+          "tenantIdList": {
+            "type": "string(integer)[]",
+            "required": false,
+            "description": "Space ID collection",
+            "not_blank": false
+          },
+          "personalAssets": {
+            "type": "UserPersonalAssetsConfigVO",
+            "required": false,
+            "description": "Personal asset-space configuration; created by default when omitted; Valid",
+            "not_blank": false
+          },
+          "personalBase": {
+            "type": "UserPersonalBaseConfigVO",
+            "required": false,
+            "description": "Personal multidimensional-table database configuration; omitted means no creation; Valid",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": true,
+      "destructive": false
+    },
+    "user_update": {
+      "method": "PUT",
+      "endpoint": "/system/updateUser",
+      "title": "Update an account and its department/system-role associations",
+      "group": "users",
+      "body_kind": "object",
+      "fields": {
+        "body": {
+          "id": {
+            "type": "string(integer)",
+            "required": true,
+            "description": "Target user is required by business semantics; VO lacks @NotNull, but callers must provide a valid ID rather than assume omission is safe",
+            "not_blank": false
+          },
+          "username": {
+            "type": "string",
+            "required": false,
+            "description": "null preserves the original; nonempty values use creation validation. Blank checks may be skipped and blank values written; external callers must supply valid usernames.",
+            "not_blank": false
+          },
+          "nickname": {
+            "type": "string",
+            "required": false,
+            "description": "Missing/null writes null; UI enforces 1..100",
+            "not_blank": false
+          },
+          "departmentIdList": {
+            "type": "string(integer)[]",
+            "required": false,
+            "description": "Each update deletes old associations; missing/null/[] returns to root department 0; nonempty values fully replace with deduplication",
+            "not_blank": false
+          },
+          "systemRoleIdList": {
+            "type": "string(integer)[]",
+            "required": false,
+            "description": "Only nonempty arrays trigger full replacement; omitted/null/[] preserves old roles. This endpoint does not reuse creation's role-existence validation.",
+            "not_blank": false
+          },
+          "jobTitle": {
+            "type": "string",
+            "required": false,
+            "description": "Missing/null writes null",
+            "not_blank": false
+          },
+          "leaderId": {
+            "type": "string(integer)",
+            "required": false,
+            "description": "Missing/null writes null",
+            "not_blank": false
+          },
+          "email": {
+            "type": "string",
+            "required": false,
+            "description": "Missing/null writes null; nonempty values must be valid email <=320 characters",
+            "not_blank": false
+          },
+          "ssoUserId": {
+            "type": "string",
+            "required": false,
+            "description": "Writes and checks duplicates only for nonblank values; legacy field, not independent SSO-binding management",
+            "not_blank": false
+          },
+          "userPermissionIdList": {
+            "type": "string(integer)[]",
+            "required": false,
+            "description": "Omitted/null preserves; [] clears; nonempty validates 114001/114002 then replaces",
+            "not_blank": false
+          },
+          "personalAssets": {
+            "type": "UserPersonalAssetsConfigVO",
+            "required": false,
+            "description": "Omission still creates personal space automatically for users without it; Valid",
+            "not_blank": false
+          },
+          "personalBase": {
+            "type": "UserPersonalBaseConfigVO",
+            "required": false,
+            "description": "Omission does not enable it; already enabled resources are not recreated; false cannot disable it; Valid",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": true,
+      "destructive": false,
+      "require_explicit": [
+        "nickname",
+        "username",
+        "departmentIdList",
+        "systemRoleIdList",
+        "jobTitle",
+        "leaderId",
+        "email"
+      ]
+    },
+    "user_status": {
+      "method": "PUT",
+      "endpoint": "/system/updateStatus",
+      "title": "Enable/disable an account",
+      "group": "users",
+      "body_kind": "none",
+      "fields": {
+        "query": {
+          "userId": {
+            "type": "string(integer)",
+            "required": true,
+            "description": "Target account ID",
+            "not_blank": false
+          },
+          "userStatus": {
+            "type": "enum",
+            "required": true,
+            "description": "ENABLE or DISABLE; ENABLE; DISABLE",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": true,
+      "destructive": true
+    },
+    "user_reset_password": {
+      "method": "PUT",
+      "endpoint": "/system/resetPassword",
+      "title": "Administratively reset a regular account's password",
+      "group": "users",
+      "body_kind": "none",
+      "fields": {
+        "query": {
+          "userId": {
+            "type": "string(integer)",
+            "required": true,
+            "description": "Target account ID; platform administrator accounts cannot be reset",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": true,
+      "destructive": true
+    },
+    "administrator_transfer": {
+      "method": "PUT",
+      "endpoint": "/system/updateSystemAdministrator",
+      "title": "Transfer the platform administrator role",
+      "group": "users",
+      "body_kind": "none",
+      "fields": {
+        "query": {
+          "userId": {
+            "type": "string(integer)",
+            "required": true,
+            "description": "Successor account ID",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": true,
+      "destructive": true
+    },
+    "user_sso_list": {
+      "method": "GET",
+      "endpoint": "/system/user/{userId}/sso-bindings",
+      "title": "Read user SSO bindings",
+      "group": "users",
+      "body_kind": "none",
+      "fields": {
+        "path": {
+          "userId": {
+            "type": "string(integer)",
+            "required": true,
+            "description": "User ID",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": false,
+      "destructive": false
+    },
+    "user_sso_unbind": {
+      "method": "DELETE",
+      "endpoint": "/system/user/{userId}/sso-bindings/{bindingId}",
+      "title": "Unbind a user's SSO identity",
+      "group": "users",
+      "body_kind": "none",
+      "fields": {
+        "path": {
+          "userId": {
+            "type": "string(integer)",
+            "required": true,
+            "description": "Target user ID",
+            "not_blank": false
+          },
+          "bindingId": {
+            "type": "string(integer)",
+            "required": true,
+            "description": "This user's SSO binding ID",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": true,
+      "destructive": true
+    },
+    "department_tree": {
+      "method": "GET",
+      "endpoint": "/department/tree",
+      "title": "Read the department tree",
+      "group": "departments",
+      "body_kind": "none",
+      "fields": {
+        "query": {
+          "withUser": {
+            "type": "boolean",
+            "required": false,
+            "description": "Only true includes each department's direct userList; omitted/false does not query members",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": false,
+      "destructive": false
+    },
+    "department_create": {
+      "method": "POST",
+      "endpoint": "/department",
+      "title": "Create a department/subdepartment",
+      "group": "departments",
+      "body_kind": "object",
+      "fields": {
+        "body": {
+          "name": {
+            "type": "string",
+            "required": true,
+            "description": "@NotBlank; must not be blank. No explicit backend length/duplicate-name validation; the UI also checks nonempty input. NotBlank(message = \"{required.parameter.error}\")",
+            "not_blank": true
+          },
+          "parentId": {
+            "type": "string(integer)",
+            "required": true,
+            "description": "@NotNull; use 0 for the root department; parent existence is not explicitly validated. NotNull(message = \"{required.parameter.error}\")",
+            "not_blank": false
+          },
+          "leaderId": {
+            "type": "string(integer)",
+            "required": false,
+            "description": "Optional BigInteger; user membership/existence is not explicitly validated",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": true,
+      "destructive": false
+    },
+    "department_update": {
+      "method": "PUT",
+      "endpoint": "/department",
+      "title": "Rename, move, or set a department leader",
+      "group": "departments",
+      "body_kind": "object",
+      "fields": {
+        "body": {
+          "id": {
+            "type": "string(integer)",
+            "required": true,
+            "description": "@NotNull target department ID; NotNull(message = \"{required.parameter.error}\")",
+            "not_blank": false
+          },
+          "name": {
+            "type": "string",
+            "required": false,
+            "description": "Optional; writes non-null values; no explicit nonblank/length/duplicate validation",
+            "not_blank": false
+          },
+          "parentId": {
+            "type": "string(integer)",
+            "required": false,
+            "description": "Optional destination parent ID for moves; the UI disallows self/descendants and moving root 0; the backend does not enforce these business checks",
+            "not_blank": false
+          },
+          "leaderId": {
+            "type": "string(integer)",
+            "required": false,
+            "description": "Optional selected leader user ID; the UI selects from this department's paginated users; the backend does not verify membership",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": true,
+      "destructive": false
+    },
+    "department_delete": {
+      "method": "DELETE",
+      "endpoint": "/department/{id}",
+      "title": "Delete a department and its subdepartments",
+      "group": "departments",
+      "body_kind": "none",
+      "fields": {
+        "path": {
+          "id": {
+            "type": "string(integer)",
+            "required": true,
+            "description": "Department ID to delete",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": true,
+      "destructive": true
+    },
+    "department_page": {
+      "method": "GET",
+      "endpoint": "/department/page",
+      "title": "List departments with pagination",
+      "group": "departments",
+      "body_kind": "none",
+      "fields": {
+        "query": {
+          "keyword": {
+            "type": "string",
+            "required": false,
+            "description": "Department-name LIKE keyword",
+            "not_blank": false
+          },
+          "page": {
+            "type": "integer",
+            "required": true,
+            "description": "Page numbers start at 1; no @Min",
+            "not_blank": false
+          },
+          "size": {
+            "type": "integer",
+            "required": true,
+            "description": "Maximum 1000; no @Min; <= 1000",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": false,
+      "destructive": false
+    },
+    "department_detail": {
+      "method": "GET",
+      "endpoint": "/department/{id}",
+      "title": "Read department details",
+      "group": "departments",
+      "body_kind": "none",
+      "fields": {
+        "path": {
+          "id": {
+            "type": "string(integer)",
+            "required": true,
+            "description": "Department ID",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": false,
+      "destructive": false
+    },
+    "department_members_append": {
+      "method": "POST",
+      "endpoint": "/department/batchSaveUserDepartment",
+      "title": "Append user-department associations in bulk",
+      "group": "departments",
+      "body_kind": "array",
+      "fields": {
+        "body": {
+          "userId": {
+            "type": "string(integer)",
+            "required": true,
+            "description": "User ID; NotNull(message = \"{required.parameter.error}\")",
+            "not_blank": false
+          },
+          "departmentId": {
+            "type": "string(integer)",
+            "required": true,
+            "description": "Department ID; NotNull(message = \"{required.parameter.error}\")",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": true,
+      "destructive": false
+    },
+    "legacy_user_page": {
+      "method": "GET",
+      "endpoint": "/admin/user/page",
+      "title": "Legacy administrative user pagination",
+      "group": "identity",
+      "body_kind": "none",
+      "fields": {
+        "query": {
+          "phoneNumber": {
+            "type": "string",
+            "required": false,
+            "description": "Phone-number LIKE filter",
+            "not_blank": false
+          },
+          "page": {
+            "type": "integer",
+            "required": true,
+            "description": "Page number",
+            "not_blank": false
+          },
+          "size": {
+            "type": "integer",
+            "required": true,
+            "description": "Maximum 1000",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": false,
+      "destructive": false
+    },
+    "current_user": {
+      "method": "GET",
+      "endpoint": "/user/readCurrentUser",
+      "title": "Read the current logged-in user",
+      "group": "identity",
+      "body_kind": "none",
+      "fields": {},
+      "mutating": false,
+      "destructive": false
+    },
+    "authenticated_user": {
+      "method": "GET",
+      "endpoint": "/user/readAuthCurrentUser",
+      "title": "Read the current user with Shiro authentication required",
+      "group": "identity",
+      "body_kind": "none",
+      "fields": {},
+      "mutating": false,
+      "destructive": false
+    },
+    "anonymous_user": {
+      "method": "GET",
+      "endpoint": "/user/readUnAuthCurrentUser",
+      "title": "Read the current user with anonymous compatibility",
+      "group": "identity",
+      "body_kind": "none",
+      "fields": {},
+      "mutating": false,
+      "destructive": false
+    },
+    "system_permissions": {
+      "method": "GET",
+      "endpoint": "/user/getSystemPermissionIdList",
+      "title": "Read current-user system permission IDs",
+      "group": "identity",
+      "body_kind": "none",
+      "fields": {},
+      "mutating": false,
+      "destructive": false
+    },
+    "organization_permissions": {
+      "method": "GET",
+      "endpoint": "/user/getPermissionIdList",
+      "title": "Read current organization permission IDs",
+      "group": "identity",
+      "body_kind": "none",
+      "fields": {},
+      "mutating": false,
+      "destructive": false
+    },
+    "profile_update": {
+      "method": "PUT",
+      "endpoint": "/user",
+      "title": "Update the current user's nickname",
+      "group": "identity",
+      "body_kind": "object",
+      "fields": {
+        "body": {
+          "nickname": {
+            "type": "string",
+            "required": true,
+            "description": "The only effective request field; current UserServiceImpl.updateUser calls only setNickname",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": true,
+      "destructive": false
+    },
+    "password_update": {
+      "method": "PUT",
+      "endpoint": "/user/updatePassword",
+      "title": "Change the current user's password",
+      "group": "identity",
+      "body_kind": "none",
+      "fields": {
+        "query": {
+          "oldPassword": {
+            "type": "string",
+            "required": true,
+            "description": "Raw current password string, not a precomputed hash",
+            "not_blank": false
+          },
+          "newPassword": {
+            "type": "string",
+            "required": true,
+            "description": "Raw new password; at least 8 characters, including uppercase/lowercase letters, digits, and special characters",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": true,
+      "destructive": false,
+      "unsupported": "Only Session or first-party USER_JWT supports password updates. OAuth2 and personal tokens are rejected; use platform personal settings."
+    },
+    "icon_upload": {
+      "method": "POST",
+      "endpoint": "/file/upload",
+      "title": "Upload a personal database icon (general upload helper)",
+      "group": "identity",
+      "body_kind": "multipart",
+      "fields": {
+        "multipart": {
+          "file": {
+            "type": "binary",
+            "required": true,
+            "description": "Multipart file field; the UI accepts images <= 2 MiB",
+            "not_blank": false
+          },
+          "filename": {
+            "type": "string",
+            "required": false,
+            "description": "Optional target filename; blank generates a random name while preserving the extension",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": true,
+      "destructive": false
+    },
+    "organization_page": {
+      "method": "GET",
+      "endpoint": "/system/organization/page",
+      "title": "Query associated organization spaces (hook helper)",
+      "group": "organizations",
+      "body_kind": "none",
+      "fields": {
+        "query": {
+          "keyword": {
+            "type": "string",
+            "required": false,
+            "description": "Fuzzy organization-name search",
+            "not_blank": false
+          },
+          "userId": {
+            "type": "string(integer)",
+            "required": false,
+            "description": "Filter by the user's existing organization associations",
+            "not_blank": false
+          },
+          "page": {
+            "type": "integer",
+            "required": false,
+            "description": "Page starts at 1; omitting page or size queries all results",
+            "not_blank": false
+          },
+          "size": {
+            "type": "integer",
+            "required": false,
+            "description": "Per-page maximum 1000; omitting page or size queries all results",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": false,
+      "destructive": false
+    },
+    "organization_join": {
+      "method": "POST",
+      "endpoint": "/system/joinOrganizationList",
+      "title": "Add a user to organization spaces (hook helper)",
+      "group": "organizations",
+      "body_kind": "object",
+      "fields": {
+        "body": {
+          "userId": {
+            "type": "string(integer)",
+            "required": true,
+            "description": "VO has @NotNull, but the controller parameter has no @Valid, so HTTP Bean Validation is not guaranteed; required by business semantics; NotNull(message = \"{required.parameter.error}\")",
+            "not_blank": false
+          },
+          "tenantIdList": {
+            "type": "string(integer)[]",
+            "required": true,
+            "description": "VO has @NotEmpty, but the controller has no @Valid; pass a nonempty array of real organization IDs; NotEmpty(message = \"{required.parameter.error}\"); Valid",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": true,
+      "destructive": false
+    },
+    "organization_leave": {
+      "method": "DELETE",
+      "endpoint": "/system/deleteOrganizationMember",
+      "title": "Remove organization-space membership (hook helper)",
+      "group": "organizations",
+      "body_kind": "none",
+      "fields": {
+        "query": {
+          "userId": {
+            "type": "string(integer)",
+            "required": true,
+            "description": "Target user ID",
+            "not_blank": false
+          },
+          "tenantId": {
+            "type": "string(integer)",
+            "required": true,
+            "description": "Target organization ID",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": true,
+      "destructive": true
+    },
+    "system_role_create": {
+      "method": "POST",
+      "endpoint": "/systemRole/save",
+      "title": "Create a system role and bind system permissions",
+      "group": "system-roles",
+      "body_kind": "object",
+      "fields": {
+        "body": {
+          "name": {
+            "type": "string",
+            "required": true,
+            "description": "Name",
+            "not_blank": true
+          },
+          "description": {
+            "type": "string",
+            "required": true,
+            "description": "Remarks",
+            "not_blank": true
+          },
+          "permissionList": {
+            "type": "string(integer)[]",
+            "required": false,
+            "description": "Permission list",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": true,
+      "destructive": false
+    },
+    "system_role_update": {
+      "method": "PUT",
+      "endpoint": "/systemRole/update",
+      "title": "Update a system role and fully replace system permissions",
+      "group": "system-roles",
+      "body_kind": "object",
+      "fields": {
+        "body": {
+          "id": {
+            "type": "string(integer)",
+            "required": true,
+            "description": "Primary key",
+            "not_blank": false
+          },
+          "name": {
+            "type": "string",
+            "required": true,
+            "description": "Name",
+            "not_blank": true
+          },
+          "description": {
+            "type": "string",
+            "required": true,
+            "description": "Remarks",
+            "not_blank": true
+          },
+          "permissionList": {
+            "type": "string(integer)[]",
+            "required": false,
+            "description": "Permission list",
+            "not_blank": false
+          },
+          "defaultIs": {
+            "type": "boolean",
+            "required": false,
+            "description": "Whether this is the default role",
+            "not_blank": false
+          },
+          "createdBy": {
+            "type": "string(integer)",
+            "required": false,
+            "description": "Created by",
+            "not_blank": false
+          },
+          "updatedBy": {
+            "type": "string(integer)",
+            "required": false,
+            "description": "Modified by",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": true,
+      "destructive": false,
+      "require_explicit": [
+        "permissionList"
+      ]
+    },
+    "system_role_delete": {
+      "method": "DELETE",
+      "endpoint": "/systemRole/delete/{id}",
+      "title": "Delete a system role",
+      "group": "system-roles",
+      "body_kind": "none",
+      "fields": {
+        "path": {
+          "id": {
+            "type": "BigInteger decimal ID",
+            "required": true,
+            "description": "Existing system-role ID; no positive-only restriction; 0 is the protected default role",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": true,
+      "destructive": true
+    },
+    "system_role_page": {
+      "method": "GET",
+      "endpoint": "/systemRole/page",
+      "title": "List system roles with permission IDs for editing",
+      "group": "system-roles",
+      "body_kind": "none",
+      "fields": {
+        "query": {
+          "keyword": {
+            "type": "string",
+            "required": false,
+            "description": "System roles: nonblank keyword is trimmed for name substring matching with SQL LIKE wildcards escaped; blank disables filtering",
+            "not_blank": false
+          },
+          "page": {
+            "type": "int32",
+            "required": true,
+            "description": "The frontend sends pageIndex + 1, starting at 1; neither controller nor business logic declares a page lower-bound check.",
+            "not_blank": false
+          },
+          "size": {
+            "type": "int32",
+            "required": true,
+            "description": "Controller @Max(1000); recommended 1..1000; no @Min or business lower-bound check.",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": false,
+      "destructive": false
+    },
+    "system_role_options": {
+      "method": "GET",
+      "endpoint": "/systemRole/optional",
+      "title": "Query system-role dropdown options",
+      "group": "system-roles",
+      "body_kind": "none",
+      "fields": {},
+      "mutating": false,
+      "destructive": false
+    },
+    "organization_role_page": {
+      "method": "GET",
+      "endpoint": "/role/page",
+      "title": "List organization roles with pagination",
+      "group": "organization-roles",
+      "body_kind": "none",
+      "fields": {
+        "query": {
+          "keyword": {
+            "type": "string",
+            "required": false,
+            "description": "LIKE substring match on organization Role.name, without SystemRole-style escaping/trimming.",
+            "not_blank": false
+          },
+          "page": {
+            "type": "int32",
+            "required": true,
+            "description": "The frontend sends pageIndex + 1, starting at 1; neither controller nor business logic declares a page lower-bound check.",
+            "not_blank": false
+          },
+          "size": {
+            "type": "int32",
+            "required": true,
+            "description": "Controller @Max(1000); recommended 1..1000; no @Min or business lower-bound check.",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": false,
+      "destructive": false
+    },
+    "organization_role_create": {
+      "method": "POST",
+      "endpoint": "/role",
+      "title": "Create an organization role and its legacy permissions",
+      "group": "organization-roles",
+      "body_kind": "object",
+      "fields": {
+        "body": {
+          "name": {
+            "type": "string",
+            "required": true,
+            "description": "Name",
+            "not_blank": true
+          },
+          "description": {
+            "type": "string",
+            "required": false,
+            "description": "Remarks",
+            "not_blank": false
+          },
+          "permissionIdList": {
+            "type": "string(integer)[]",
+            "required": true,
+            "description": "Permission ID collection",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": true,
+      "destructive": false
+    },
+    "organization_role_update": {
+      "method": "PUT",
+      "endpoint": "/role",
+      "title": "Update an organization role and replace its legacy permissions",
+      "group": "organization-roles",
+      "body_kind": "object",
+      "fields": {
+        "body": {
+          "id": {
+            "type": "string(integer)",
+            "required": true,
+            "description": "Primary key",
+            "not_blank": false
+          },
+          "name": {
+            "type": "string",
+            "required": true,
+            "description": "Name",
+            "not_blank": true
+          },
+          "description": {
+            "type": "string",
+            "required": false,
+            "description": "Remarks",
+            "not_blank": false
+          },
+          "permissionIdList": {
+            "type": "string(integer)[]",
+            "required": true,
+            "description": "Permission ID collection",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": true,
+      "destructive": false
+    },
+    "organization_role_delete": {
+      "method": "DELETE",
+      "endpoint": "/role/{id}",
+      "title": "Delete an organization role",
+      "group": "organization-roles",
+      "body_kind": "none",
+      "fields": {
+        "path": {
+          "id": {
+            "type": "BigInteger decimal ID",
+            "required": true,
+            "description": "Organization Role ID",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": true,
+      "destructive": true
+    },
+    "organization_role_detail": {
+      "method": "GET",
+      "endpoint": "/role/{id}",
+      "title": "Read organization-role details including legacy permission IDs",
+      "group": "organization-roles",
+      "body_kind": "none",
+      "fields": {
+        "path": {
+          "id": {
+            "type": "BigInteger decimal ID",
+            "required": true,
+            "description": "Organization Role ID",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": false,
+      "destructive": false
+    },
+    "organization_role_all": {
+      "method": "GET",
+      "endpoint": "/role/readRoleAll",
+      "title": "List all roles in the shared organization",
+      "group": "organization-roles",
+      "body_kind": "none",
+      "fields": {},
+      "mutating": false,
+      "destructive": false
+    },
+    "organization_role_default": {
+      "method": "PUT",
+      "endpoint": "/role/updateDefaultRole/{id}",
+      "title": "Set the default organization role",
+      "group": "organization-roles",
+      "body_kind": "none",
+      "fields": {
+        "path": {
+          "id": {
+            "type": "BigInteger decimal ID",
+            "required": true,
+            "description": "Existing organization Role ID",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": true,
+      "destructive": true
+    },
+    "organization_role_assign": {
+      "method": "PUT",
+      "endpoint": "/organization/changeRole",
+      "title": "Replace a member's legacy organization roles",
+      "group": "organization-roles",
+      "body_kind": "object",
+      "fields": {
+        "body": {
+          "userId": {
+            "type": "string(integer)",
+            "required": true,
+            "description": "User ID",
+            "not_blank": false
+          },
+          "roleIdList": {
+            "type": "string(integer)[]",
+            "required": true,
+            "description": "Role ID collection",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": true,
+      "destructive": true
+    },
+    "acl_page": {
+      "method": "GET",
+      "endpoint": "/assets/permission/page",
+      "title": "List resource ACL configurations with pagination",
+      "group": "acl",
+      "body_kind": "none",
+      "fields": {
+        "query": {
+          "sortField": {
+            "type": "string",
+            "required": false,
+            "description": "Sort field",
+            "not_blank": false
+          },
+          "sortDirection": {
+            "type": "SortDirectionEnum",
+            "required": false,
+            "description": "Sort direction",
+            "not_blank": false
+          },
+          "page": {
+            "type": "integer",
+            "required": true,
+            "description": "Page number; NotNull(message = \"{required.parameter.error}\")",
+            "not_blank": false
+          },
+          "size": {
+            "type": "integer",
+            "required": true,
+            "description": "Records per page, maximum 1000; NotNull(message = \"{required.parameter.error}\"); Max(value = CommonConstant.PAGING_LIMIT_MAX)",
+            "not_blank": false
+          },
+          "keyword": {
+            "type": "string",
+            "required": false,
+            "description": "Permission name keyword",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": false,
+      "destructive": false
+    },
+    "acl_form": {
+      "method": "GET",
+      "endpoint": "/assets/permission/form/init",
+      "title": "Initialize the resource permission configuration form",
+      "group": "acl",
+      "body_kind": "none",
+      "fields": {
+        "query": {
+          "permissionId": {
+            "type": "string(BigInteger)",
+            "required": false,
+            "description": "Omit for creation; provide a value to edit an existing configuration",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": false,
+      "destructive": false
+    },
+    "acl_create": {
+      "method": "POST",
+      "endpoint": "/assets/savePermission",
+      "title": "Create a resource ACL configuration",
+      "group": "acl",
+      "body_kind": "object",
+      "fields": {
+        "body": {
+          "name": {
+            "type": "string",
+            "required": true,
+            "description": "Permission name; NotBlank(message = \"{required.parameter.error}\")",
+            "not_blank": true
+          },
+          "description": {
+            "type": "string",
+            "required": true,
+            "description": "Permission description; NotBlank(message = \"{required.parameter.error}\")",
+            "not_blank": true
+          },
+          "systemRoleIdList": {
+            "type": "string(integer)[]",
+            "required": false,
+            "description": "System-role IDs; at least this list or the department ID list must be nonempty; both may be provided",
+            "not_blank": false
+          },
+          "departmentIdList": {
+            "type": "string(integer)[]",
+            "required": false,
+            "description": "Department IDs; at least this list or the system-role ID list must be nonempty; includes users in all subdepartments of the selected departments",
+            "not_blank": false
+          },
+          "ruleList": {
+            "type": "AssetsPermissionRuleVO[]",
+            "required": false,
+            "description": "Folder permission rule list",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": true,
+      "destructive": false
+    },
+    "acl_update": {
+      "method": "PUT",
+      "endpoint": "/assets/updatePermission",
+      "title": "Update a resource ACL configuration",
+      "group": "acl",
+      "body_kind": "object",
+      "fields": {
+        "body": {
+          "id": {
+            "type": "string(integer)",
+            "required": true,
+            "description": "Primary key; NotNull(message = \"{required.parameter.error}\")",
+            "not_blank": false
+          },
+          "name": {
+            "type": "string",
+            "required": true,
+            "description": "Permission name; NotBlank(message = \"{required.parameter.error}\")",
+            "not_blank": true
+          },
+          "description": {
+            "type": "string",
+            "required": true,
+            "description": "Permission description; NotBlank(message = \"{required.parameter.error}\")",
+            "not_blank": true
+          },
+          "systemRoleIdList": {
+            "type": "string(integer)[]",
+            "required": false,
+            "description": "System-role IDs; at least this list or the department ID list must be nonempty; both may be provided",
+            "not_blank": false
+          },
+          "departmentIdList": {
+            "type": "string(integer)[]",
+            "required": false,
+            "description": "Department IDs; at least this list or the system-role ID list must be nonempty; includes users in all subdepartments of the selected departments",
+            "not_blank": false
+          },
+          "ruleList": {
+            "type": "AssetsPermissionRuleVO[]",
+            "required": false,
+            "description": "Folder permission rule list",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": true,
+      "destructive": false,
+      "require_explicit": [
+        "systemRoleIdList",
+        "departmentIdList",
+        "ruleList"
+      ]
+    },
+    "acl_delete": {
+      "method": "DELETE",
+      "endpoint": "/assets/deletePermission/{id}",
+      "title": "Delete a resource ACL configuration",
+      "group": "acl",
+      "body_kind": "none",
+      "fields": {
+        "path": {
+          "id": {
+            "type": "string(BigInteger)",
+            "required": true,
+            "description": "Permission configuration ID",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": true,
+      "destructive": true
+    },
+    "acl_detail": {
+      "method": "GET",
+      "endpoint": "/assets/permission/{id}",
+      "title": "Read resource ACL configuration details",
+      "group": "acl",
+      "body_kind": "none",
+      "fields": {
+        "path": {
+          "id": {
+            "type": "string(BigInteger)",
+            "required": true,
+            "description": "Permission configuration ID",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": false,
+      "destructive": false
+    },
+    "effective_permissions": {
+      "method": "GET",
+      "endpoint": "/assets/access/permission",
+      "title": "Read the current user's effective asset permissions",
+      "group": "acl",
+      "body_kind": "none",
+      "fields": {
+        "query": {
+          "targetType": {
+            "type": "FILE|FOLDER",
+            "required": false,
+            "description": "Required when path is empty and targetId is nonempty",
+            "not_blank": false
+          },
+          "targetId": {
+            "type": "string(BigInteger)",
+            "required": false,
+            "description": "Defaults to Root(0) when omitted; FILE must reference an existing file",
+            "not_blank": false
+          },
+          "path": {
+            "type": "string",
+            "required": false,
+            "description": "When nonempty, takes precedence over targetType/targetId; Root-relative path, with a final segment containing an extension interpreted as a file",
+            "not_blank": false
+          },
+          "fileCursor": {
+            "type": "string(BigInteger)",
+            "required": false,
+            "description": "Last file ID from the previous batch, >= 0",
+            "not_blank": false
+          },
+          "fileSize": {
+            "type": "integer",
+            "required": false,
+            "description": "File-permission node batch size; 1..1000; 30",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": false,
+      "destructive": false
+    },
+    "directory_children": {
+      "method": "GET",
+      "endpoint": "/assets/access/directory/children",
+      "title": "Query direct folders/files by space",
+      "group": "resources",
+      "body_kind": "none",
+      "fields": {
+        "query": {
+          "spaceType": {
+            "type": "AssetsDirectorySpaceEnum",
+            "required": true,
+            "description": "Space type: MY personal space, TEAM team space, SHARED shared entry; NotNull(message = \"{required.parameter.error}\")",
+            "not_blank": false
+          },
+          "entryRootId": {
+            "type": "string(integer)",
+            "required": false,
+            "description": "Shared-folder entry ID; required for spaceType=SHARED",
+            "not_blank": false
+          },
+          "parentId": {
+            "type": "string(integer)",
+            "required": false,
+            "description": "Parent folder ID; empty uses the current space's hidden root",
+            "not_blank": false
+          },
+          "includeFiles": {
+            "type": "boolean",
+            "required": false,
+            "description": "Whether to also query files in the current folder; false",
+            "not_blank": false
+          },
+          "folderCursor": {
+            "type": "string(integer)",
+            "required": false,
+            "description": "Last folder ID from the previous batch",
+            "not_blank": false
+          },
+          "fileCursor": {
+            "type": "string(integer)",
+            "required": false,
+            "description": "Last file ID from the previous batch",
+            "not_blank": false
+          },
+          "folderSize": {
+            "type": "integer",
+            "required": false,
+            "description": "Folder batch size, 1..100; 50; Min(value = 1, message = \"{validation.min}\"); Max(value = 100, message = \"{validation.max}\")",
+            "not_blank": false
+          },
+          "fileSize": {
+            "type": "integer",
+            "required": false,
+            "description": "File batch size, 1..100; 50; Min(value = 1, message = \"{validation.min}\"); Max(value = 100, message = \"{validation.max}\")",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": false,
+      "destructive": false
+    },
+    "directory_search": {
+      "method": "GET",
+      "endpoint": "/assets/access/directory/search",
+      "title": "Search folders/files by space",
+      "group": "resources",
+      "body_kind": "none",
+      "fields": {
+        "query": {
+          "spaceType": {
+            "type": "AssetsDirectorySpaceEnum",
+            "required": true,
+            "description": "Space type: MY personal space, TEAM team space, SHARED shared entry; NotNull(message = \"{required.parameter.error}\")",
+            "not_blank": false
+          },
+          "entryRootId": {
+            "type": "string(integer)",
+            "required": false,
+            "description": "Shared-folder entry ID; required for spaceType=SHARED",
+            "not_blank": false
+          },
+          "keyword": {
+            "type": "string",
+            "required": true,
+            "description": "Folder/file name keyword; NotBlank(message = \"{required.parameter.error}\"); Size(max = 100, message = \"{validation.size}\")",
+            "not_blank": true
+          },
+          "folderCursor": {
+            "type": "string(integer)",
+            "required": false,
+            "description": "Last examined folder ID from the previous batch",
+            "not_blank": false
+          },
+          "fileCursor": {
+            "type": "string(integer)",
+            "required": false,
+            "description": "Last examined file ID from the previous batch",
+            "not_blank": false
+          },
+          "folderSize": {
+            "type": "integer",
+            "required": false,
+            "description": "Folder result size, 1..100; 50; Min(value = 1, message = \"{validation.min}\"); Max(value = 100, message = \"{validation.max}\")",
+            "not_blank": false
+          },
+          "fileSize": {
+            "type": "integer",
+            "required": false,
+            "description": "File result size, 1..100; 50; Min(value = 1, message = \"{validation.min}\"); Max(value = 100, message = \"{validation.max}\")",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": false,
+      "destructive": false
+    },
+    "folder_navigate": {
+      "method": "GET",
+      "endpoint": "/assets/folder/navigate",
+      "title": "Query folder navigation by path or ID",
+      "group": "resources",
+      "body_kind": "none",
+      "fields": {
+        "query": {
+          "path": {
+            "type": "string",
+            "required": false,
+            "description": "Folder path, for example /Root/Products/Designs; takes precedence for locating the target",
+            "not_blank": false
+          },
+          "targetId": {
+            "type": "string(integer)",
+            "required": false,
+            "description": "Target resource ID; effective when path is empty",
+            "not_blank": false
+          },
+          "targetType": {
+            "type": "AssetsType",
+            "required": false,
+            "description": "Target resource type, FILE or FOLDER; effective when path is empty and targetId is nonempty",
+            "not_blank": false
+          },
+          "folderOnly": {
+            "type": "boolean",
+            "required": false,
+            "description": "Return folders only; default false returns folders and files; false",
+            "not_blank": false
+          },
+          "fileCursor": {
+            "type": "string(integer)",
+            "required": false,
+            "description": "Last file ID from the current target folder's previous batch; omit on the first call",
+            "not_blank": false
+          },
+          "fileSize": {
+            "type": "integer",
+            "required": false,
+            "description": "File batch size per trace node; default 30, range 1..1000; 30",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": false,
+      "destructive": false
+    },
+    "folder_page_post": {
+      "method": "POST",
+      "endpoint": "/assets/folder/page",
+      "title": "List folder resources with pagination",
+      "group": "resources",
+      "body_kind": "object",
+      "fields": {
+        "query": {
+          "sortField": {
+            "type": "string",
+            "required": false,
+            "description": "Sort field",
+            "not_blank": false
+          },
+          "sortDirection": {
+            "type": "SortDirectionEnum",
+            "required": false,
+            "description": "Sort direction",
+            "not_blank": false
+          },
+          "page": {
+            "type": "integer",
+            "required": true,
+            "description": "Page number; NotNull(message = \"{required.parameter.error}\")",
+            "not_blank": false
+          },
+          "size": {
+            "type": "integer",
+            "required": true,
+            "description": "Records per page, maximum 1000; NotNull(message = \"{required.parameter.error}\"); Max(value = CommonConstant.PAGING_LIMIT_MAX)",
+            "not_blank": false
+          },
+          "keyword": {
+            "type": "string",
+            "required": false,
+            "description": "Keyword",
+            "not_blank": false
+          },
+          "folderId": {
+            "type": "string(integer)",
+            "required": true,
+            "description": "Folder ID; NotNull(message = \"{required.parameter.error}\")",
+            "not_blank": false
+          },
+          "type": {
+            "type": "string",
+            "required": false,
+            "description": "Optional type filter: FOLDER for folders only, FILE for files only; omitted returns all",
+            "not_blank": false
+          },
+          "fileTypeFilter": {
+            "type": "AssetsSearchFileTypeEnum[]",
+            "required": false,
+            "description": "File-type filters, such as [\"IMAGE\", \"VIDEO\", \"DOC\"]; ALL disables filtering",
+            "not_blank": false
+          }
+        },
+        "body": {
+          "metadataLogicType": {
+            "type": "AssetsRuleLogicTypeEnum",
+            "required": false,
+            "description": "Metadata condition logic (AND/OR), default AND; AssetsRuleLogicTypeEnum.AND; nested model: AssetsRuleLogicTypeEnum",
+            "not_blank": false
+          },
+          "metadataFilterList": {
+            "type": "AssetsFolderMetadataFilterVO.MetadataFilterVO[]",
+            "required": false,
+            "description": "Metadata filter conditions; nested model: AssetsFolderMetadataFilterVO.MetadataFilterVO",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": false,
+      "destructive": false
+    },
+    "folder_page": {
+      "method": "GET",
+      "endpoint": "/assets/folder/page",
+      "title": "List folder resources with pagination",
+      "group": "resources",
+      "body_kind": "none",
+      "fields": {
+        "query": {
+          "sortField": {
+            "type": "string",
+            "required": false,
+            "description": "Sort field",
+            "not_blank": false
+          },
+          "sortDirection": {
+            "type": "SortDirectionEnum",
+            "required": false,
+            "description": "Sort direction",
+            "not_blank": false
+          },
+          "page": {
+            "type": "integer",
+            "required": true,
+            "description": "Page number; NotNull(message = \"{required.parameter.error}\")",
+            "not_blank": false
+          },
+          "size": {
+            "type": "integer",
+            "required": true,
+            "description": "Records per page, maximum 1000; NotNull(message = \"{required.parameter.error}\"); Max(value = CommonConstant.PAGING_LIMIT_MAX)",
+            "not_blank": false
+          },
+          "keyword": {
+            "type": "string",
+            "required": false,
+            "description": "Keyword",
+            "not_blank": false
+          },
+          "folderId": {
+            "type": "string(integer)",
+            "required": true,
+            "description": "Folder ID; NotNull(message = \"{required.parameter.error}\")",
+            "not_blank": false
+          },
+          "type": {
+            "type": "string",
+            "required": false,
+            "description": "Optional type filter: FOLDER for folders only, FILE for files only; omitted returns all",
+            "not_blank": false
+          },
+          "fileTypeFilter": {
+            "type": "AssetsSearchFileTypeEnum[]",
+            "required": false,
+            "description": "File-type filters, such as [\"IMAGE\", \"VIDEO\", \"DOC\"]; ALL disables filtering",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": false,
+      "destructive": false
+    },
+    "folder_files": {
+      "method": "GET",
+      "endpoint": "/assets/folder/file/page",
+      "title": "List folder files with pagination",
+      "group": "resources",
+      "body_kind": "none",
+      "fields": {
+        "query": {
+          "sortField": {
+            "type": "string",
+            "required": false,
+            "description": "Sort field",
+            "not_blank": false
+          },
+          "sortDirection": {
+            "type": "SortDirectionEnum",
+            "required": false,
+            "description": "Sort direction",
+            "not_blank": false
+          },
+          "page": {
+            "type": "integer",
+            "required": true,
+            "description": "Page number; NotNull(message = \"{required.parameter.error}\")",
+            "not_blank": false
+          },
+          "size": {
+            "type": "integer",
+            "required": true,
+            "description": "Records per page, maximum 1000; NotNull(message = \"{required.parameter.error}\"); Max(value = CommonConstant.PAGING_LIMIT_MAX)",
+            "not_blank": false
+          },
+          "keyword": {
+            "type": "string",
+            "required": false,
+            "description": "Keyword",
+            "not_blank": false
+          },
+          "folderId": {
+            "type": "string(integer)",
+            "required": true,
+            "description": "Folder ID; NotNull(message = \"{required.parameter.error}\")",
+            "not_blank": false
+          },
+          "type": {
+            "type": "string",
+            "required": false,
+            "description": "Optional type filter: FOLDER for folders only, FILE for files only; omitted returns all",
+            "not_blank": false
+          },
+          "fileTypeFilter": {
+            "type": "AssetsSearchFileTypeEnum[]",
+            "required": false,
+            "description": "File-type filters, such as [\"IMAGE\", \"VIDEO\", \"DOC\"]; ALL disables filtering",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": false,
+      "destructive": false
+    },
+    "resource_files": {
+      "method": "GET",
+      "endpoint": "/assets/file/access/file/info",
+      "title": "Query files associated with a resource target",
+      "group": "resources",
+      "body_kind": "none",
+      "fields": {
+        "query": {
+          "targetType": {
+            "type": "FILE|FOLDER",
+            "required": false,
+            "description": "Required when path is empty and targetId is nonempty",
+            "not_blank": false
+          },
+          "targetId": {
+            "type": "string(BigInteger)",
+            "required": false,
+            "description": "Defaults to Root(0) when omitted; FILE must reference an existing file",
+            "not_blank": false
+          },
+          "path": {
+            "type": "string",
+            "required": false,
+            "description": "When nonempty, takes precedence over targetType/targetId; Root-relative path, with a final segment containing an extension interpreted as a file",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": false,
+      "destructive": false
+    },
+    "shares_received": {
+      "method": "GET",
+      "endpoint": "/assets/share/received/page",
+      "title": "Query received shares using a cursor",
+      "group": "resources",
+      "body_kind": "none",
+      "fields": {
+        "query": {
+          "size": {
+            "type": "integer",
+            "required": false,
+            "description": "Records per batch, default 50, maximum 100; 50; Min(value = 1, message = \"{validation.min}\"); Max(value = 100, message = \"{validation.max}\")",
+            "not_blank": false
+          },
+          "cursor": {
+            "type": "string",
+            "required": false,
+            "description": "Next-batch cursor returned by the previous batch; Size(max = 2048, message = \"{validation.size}\")",
+            "not_blank": false
+          },
+          "keyword": {
+            "type": "string",
+            "required": false,
+            "description": "Resource-name or path keyword; Size(max = 100, message = \"{validation.size}\")",
+            "not_blank": false
+          },
+          "targetType": {
+            "type": "AssetsType",
+            "required": false,
+            "description": "Resource type: FOLDER or FILE",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": false,
+      "destructive": false
+    },
+    "share_page": {
+      "method": "GET",
+      "endpoint": "/assets/share/page",
+      "title": "List direct resource grants",
+      "group": "sharing",
+      "body_kind": "none",
+      "fields": {
+        "query": {
+          "sortField": {
+            "type": "string",
+            "required": false,
+            "description": "Sort field",
+            "not_blank": false
+          },
+          "sortDirection": {
+            "type": "SortDirectionEnum",
+            "required": false,
+            "description": "Sort direction",
+            "not_blank": false
+          },
+          "page": {
+            "type": "integer",
+            "required": true,
+            "description": "Page number; NotNull(message = \"{required.parameter.error}\")",
+            "not_blank": false
+          },
+          "size": {
+            "type": "integer",
+            "required": true,
+            "description": "Records per page, maximum 1000; NotNull(message = \"{required.parameter.error}\"); Max(value = CommonConstant.PAGING_LIMIT_MAX)",
+            "not_blank": false
+          },
+          "targetType": {
+            "type": "AssetsType",
+            "required": true,
+            "description": "Target type; NotNull",
+            "not_blank": false
+          },
+          "targetId": {
+            "type": "string(integer)",
+            "required": true,
+            "description": "Target ID; folder 0 means Root; NotNull",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": false,
+      "destructive": false
+    },
+    "share_candidates": {
+      "method": "GET",
+      "endpoint": "/assets/share/user/page",
+      "title": "Query eligible users/departments for direct sharing",
+      "group": "sharing",
+      "body_kind": "none",
+      "fields": {
+        "query": {
+          "sortField": {
+            "type": "string",
+            "required": false,
+            "description": "Sort field",
+            "not_blank": false
+          },
+          "sortDirection": {
+            "type": "SortDirectionEnum",
+            "required": false,
+            "description": "Sort direction",
+            "not_blank": false
+          },
+          "page": {
+            "type": "integer",
+            "required": true,
+            "description": "Page number; NotNull(message = \"{required.parameter.error}\")",
+            "not_blank": false
+          },
+          "size": {
+            "type": "integer",
+            "required": true,
+            "description": "Records per page, maximum 1000; NotNull(message = \"{required.parameter.error}\"); Max(value = CommonConstant.PAGING_LIMIT_MAX)",
+            "not_blank": false
+          },
+          "targetType": {
+            "type": "AssetsType",
+            "required": true,
+            "description": "Target type; NotNull",
+            "not_blank": false
+          },
+          "targetId": {
+            "type": "string(integer)",
+            "required": true,
+            "description": "Target ID; folder 0 means Root; NotNull",
+            "not_blank": false
+          },
+          "keyword": {
+            "type": "string",
+            "required": false,
+            "description": "Username, nickname, or department-name keyword; case-insensitive and trimmed; blank disables filtering",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": false,
+      "destructive": false
+    },
+    "share_create": {
+      "method": "POST",
+      "endpoint": "/assets/share",
+      "title": "Grant direct sharing to a user/department",
+      "group": "sharing",
+      "body_kind": "object",
+      "fields": {
+        "body": {
+          "targetType": {
+            "type": "AssetsType",
+            "required": true,
+            "description": "Target type; NotNull",
+            "not_blank": false
+          },
+          "targetId": {
+            "type": "string(integer)",
+            "required": true,
+            "description": "Target ID; NotNull",
+            "not_blank": false
+          },
+          "userId": {
+            "type": "string(integer)",
+            "required": false,
+            "description": "Grantee user ID; 0 is the initialization user",
+            "not_blank": false
+          },
+          "departmentId": {
+            "type": "string(integer)",
+            "required": false,
+            "description": "Grantee department ID; exactly one of this and user ID is required",
+            "not_blank": false
+          },
+          "presetType": {
+            "type": "AssetsPermissionPresetTypeEnum",
+            "required": true,
+            "description": "Permission preset; NotNull",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": true,
+      "destructive": false
+    },
+    "share_update": {
+      "method": "PUT",
+      "endpoint": "/assets/share",
+      "title": "Update direct sharing for a user/department",
+      "group": "sharing",
+      "body_kind": "object",
+      "fields": {
+        "body": {
+          "targetType": {
+            "type": "AssetsType",
+            "required": true,
+            "description": "Target type; NotNull",
+            "not_blank": false
+          },
+          "targetId": {
+            "type": "string(integer)",
+            "required": true,
+            "description": "Target ID; NotNull",
+            "not_blank": false
+          },
+          "userId": {
+            "type": "string(integer)",
+            "required": false,
+            "description": "Grantee user ID; 0 is the initialization user",
+            "not_blank": false
+          },
+          "departmentId": {
+            "type": "string(integer)",
+            "required": false,
+            "description": "Grantee department ID; exactly one of this and user ID is required",
+            "not_blank": false
+          },
+          "presetType": {
+            "type": "AssetsPermissionPresetTypeEnum",
+            "required": true,
+            "description": "Permission preset; NotNull",
+            "not_blank": false
+          },
+          "grantId": {
+            "type": "string(integer)",
+            "required": true,
+            "description": "Grant ID; NotNull",
+            "not_blank": false
+          },
+          "version": {
+            "type": "integer",
+            "required": true,
+            "description": "Grant version; NotNull",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": true,
+      "destructive": false
+    },
+    "share_delete": {
+      "method": "DELETE",
+      "endpoint": "/assets/share",
+      "title": "Revoke direct sharing from a user/department",
+      "group": "sharing",
+      "body_kind": "object",
+      "fields": {
+        "body": {
+          "targetType": {
+            "type": "AssetsType",
+            "required": true,
+            "description": "Target type; NotNull",
+            "not_blank": false
+          },
+          "targetId": {
+            "type": "string(integer)",
+            "required": true,
+            "description": "Target ID; NotNull",
+            "not_blank": false
+          },
+          "grantId": {
+            "type": "string(integer)",
+            "required": true,
+            "description": "Grant ID; NotNull",
+            "not_blank": false
+          },
+          "version": {
+            "type": "integer",
+            "required": true,
+            "description": "Grant version; NotNull",
+            "not_blank": false
+          }
+        }
+      },
+      "mutating": true,
+      "destructive": true
+    }
+  },
+  "models": {
+    "UserPersonalAssetsConfigVO": {
+      "enabled": {
+        "type": "boolean",
+        "required": true,
+        "description": "Whether to enable personal asset space; only enabling is supported; NotNull(message = \"{required.parameter.error}\")",
+        "not_blank": false
+      }
+    },
+    "UserPersonalBaseConfigVO": {
+      "enabled": {
+        "type": "boolean",
+        "required": true,
+        "description": "Whether to enable a personal multidimensional-table database; only enabling is supported; NotNull(message = \"{required.parameter.error}\")",
+        "not_blank": false
+      },
+      "name": {
+        "type": "string",
+        "required": true,
+        "description": "Personal multidimensional-table database name; NotBlank(message = \"{required.parameter.error}\")",
+        "not_blank": true
+      },
+      "description": {
+        "type": "string",
+        "required": false,
+        "description": "Personal multidimensional-table database description",
+        "not_blank": false
+      },
+      "icon": {
+        "type": "string",
+        "required": false,
+        "description": "Personal multidimensional-table database icon",
+        "not_blank": false
+      }
+    },
+    "SortDirectionEnum": {
+      "enum": [
+        "ASC",
+        "DESC"
+      ]
+    },
+    "AssetsPermissionRuleVO": {
+      "folderId": {
+        "type": "string(integer)",
+        "required": true,
+        "description": "Folder ID; 0 means Root; NotNull(message = \"{required.parameter.error}\")",
+        "not_blank": false
+      },
+      "presetType": {
+        "type": "AssetsPermissionPresetTypeEnum",
+        "required": true,
+        "description": "Permission preset type; NotNull(message = \"{required.parameter.error}\"); nested model: AssetsPermissionPresetTypeEnum",
+        "not_blank": false
+      },
+      "permissionIdList": {
+        "type": "string(integer)[]",
+        "required": false,
+        "description": "Custom permission ID list; effective only for CUSTOM",
+        "not_blank": false
+      }
+    },
+    "AssetsPermissionPresetTypeEnum": {
+      "enum": [
+        "INHERIT",
+        "NONE",
+        "VIEW",
+        "DOWNLOAD",
+        "UPLOAD",
+        "EDIT",
+        "MANAGE",
+        "SYNC",
+        "CUSTOM"
+      ]
+    },
+    "AssetsDirectorySpaceEnum": {
+      "enum": [
+        "MY",
+        "TEAM",
+        "SHARED"
+      ]
+    },
+    "AssetsType": {
+      "enum": [
+        "FILE",
+        "FOLDER"
+      ]
+    },
+    "AssetsSearchFileTypeEnum": {
+      "enum": [
+        "ALL",
+        "IMAGE",
+        "VIDEO",
+        "DOC",
+        "FOLDER",
+        "PRODUCT"
+      ]
+    },
+    "AssetsRuleLogicTypeEnum": {
+      "enum": [
+        "OR",
+        "AND",
+        "IN",
+        "NOT_IN",
+        "EQUALS"
+      ]
+    },
+    "AssetsFolderMetadataFilterVO.MetadataFilterVO": {
+      "fieldId": {
+        "type": "string(integer)",
+        "required": false,
+        "description": "",
+        "not_blank": false
+      },
+      "operator": {
+        "type": "AssetsSearchOperatorEnum",
+        "required": false,
+        "description": "",
+        "not_blank": false
+      },
+      "value": {
+        "type": "string[]",
+        "required": false,
+        "description": "",
+        "not_blank": false
+      }
+    },
+    "AssetsSearchOperatorEnum": {
+      "enum": [
+        "IN",
+        "NOT_IN",
+        "EQUALS",
+        "NOT_EQUALS",
+        "GT",
+        "LT",
+        "BETWEEN"
+      ]
+    },
+    "enum": {
+      "enum": [
+        "ENABLE",
+        "DISABLE"
+      ]
+    },
+    "FILE|FOLDER": {
+      "enum": [
+        "FILE",
+        "FOLDER"
+      ]
+    }
+  },
+  "system_permission_ids": [
+    "100000",
+    "110000",
+    "111000",
+    "112000",
+    "112100",
+    "112200",
+    "112300",
+    "113000",
+    "113100",
+    "113200",
+    "113300",
+    "113400",
+    "113500",
+    "120000",
+    "121001",
+    "121002",
+    "121003",
+    "121004",
+    "121005",
+    "121006",
+    "121007",
+    "121008",
+    "121009",
+    "1210010",
+    "121011",
+    "122001",
+    "122002",
+    "122003",
+    "122004",
+    "122005",
+    "122006",
+    "122007",
+    "123001",
+    "124001",
+    "124002",
+    "124003",
+    "124004",
+    "125001",
+    "125008",
+    "125009",
+    "125010",
+    "130000",
+    "131000",
+    "132000",
+    "133000",
+    "134000",
+    "135000"
+  ]
+}
