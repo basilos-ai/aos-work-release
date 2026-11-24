@@ -40,10 +40,10 @@ curl -fsSL https://raw.githubusercontent.com/basilos-ai/aos-work-release/main/in
 
 ## 文件位置
 
-- 部署：`/opt/shieldon`
-- 配置：`/opt/shieldon/.env`，权限 600
-- 数据：`/opt/shieldon/runtime/data/`
-- 密钥：`/opt/shieldon/runtime/secrets/`
+- 部署：`/home/shieldon`
+- 配置：`/home/shieldon/.env`，权限 600
+- 数据：`/home/shieldon/runtime/data/`
+- 密钥：`/home/shieldon/runtime/secrets/`
 - Nginx：`/etc/nginx/conf.d/shieldon-oneclick.conf`
 - 证书：`/etc/letsencrypt/live/shieldon-oneclick/`
 - 续期钩子：`/etc/letsencrypt/renewal-hooks/deploy/shieldon-oneclick.sh`
