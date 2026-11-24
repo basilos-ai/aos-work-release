@@ -17,10 +17,10 @@ main() {
   . /etc/os-release
   case "$ID" in ubuntu|debian) ;; *) fail 'Only Ubuntu and Debian are supported.' ;; esac
   case "$(uname -m)" in x86_64|aarch64) ;; *) fail 'Only x86_64 and ARM64 are supported.' ;; esac
-  root=/opt/shieldon
+  root=/home/shieldon
   version=v0.6.2
   digest=355a39da4da1abb61babcff536bbe0728e0839c2abc9068d69949c4e0d33558e
-  marker='# Managed by install-shieldon.sh: /opt/shieldon'
+  marker='# Managed by install-shieldon.sh: /home/shieldon'
   site=/etc/nginx/conf.d/shieldon-oneclick.conf
   cert_name=shieldon-oneclick
   command -v flock >/dev/null || fail 'Install util-linux first.'
@@ -28,13 +28,13 @@ main() {
   flock -n 8 || fail 'Another ShieldON installation is running.'
   [ ! -L "$root" ] || fail 'Deployment directory must not be a symlink.'
   if [ -e "$root" ]; then
-    [ -f "$root/.oneclick" ] && [ ! -L "$root/.oneclick" ] || fail 'Existing /opt/shieldon is not owned by this launcher.'
+    [ -f "$root/.oneclick" ] && [ ! -L "$root/.oneclick" ] || fail 'Existing /home/shieldon is not owned by this launcher.'
     [ "$(cat "$root/.oneclick")" = "$version $domain" ] || fail 'Use the same domain and version to resume.'
   fi
   timeout 15 getent ahosts "$domain" >/dev/null || fail 'Domain does not resolve. Set its public DNS records first.'
   [ "$(getconf _NPROCESSORS_ONLN)" -ge 4 ] || fail 'At least 4 CPUs are required.'
   awk '/MemTotal:/ {exit !($2>=7800000)}' /proc/meminfo || fail 'At least 8 GB RAM is required.'
-  df -Pk /opt | awk 'NR==2 {exit !($2>=97656250 && $4>=5242880)}' || fail 'At least 100 GB total disk and 5 GiB free space are required.'
+  df -Pk /home | awk 'NR==2 {exit !($2>=97656250 && $4>=5242880)}' || fail 'At least 100 GB total disk and 5 GiB free space are required.'
 
   printf '\n[1/5] Installing dependencies\n'
   export DEBIAN_FRONTEND=noninteractive
