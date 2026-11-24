@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# aos-work deployment release: v2026.11.24-quick-install-preview.1
+# aos-work deployment release: v2026.11.25-quick-install-preview.1
 
 set -Eeuo pipefail
 export LC_ALL=C
@@ -340,14 +340,15 @@ from urllib.parse import urlsplit
 RELEASES = 'https://github.com/basilos-ai/aos-work-release/releases'
 # Release metadata for the verified archive paired with this quick installer.
 QUICK_RELEASE = {
-    'tag': 'v2026.11.23.4',
-    'sha256': '4af1ab3a11c6f30cede94865dfad852852240d7e21fb57c86dab46e4cb8b1299',
+    'tag': 'v2026.11.25.3',
+    'sha256': 'b08ecd336ffc9128fcdcfcede953af500c23dc05abbaa084b93cac46723b0440',
 }
 # Match the release's short-form port publications before Compose expands them.
 PUBLISHED_PORT = re.compile(r"""(?m)^([ \t]*-[ \t]*['"])(\$\{([A-Z_]+_HOST_PORT)(?::-[^}]+)?\}:)""")
 # Newest first. Add the new tag here when preparing a release.
 VERSIONS = {
-    'v2026.11.23.4': None,
+    'v2026.11.25.3': None,
+    'v2026.11.23.4': '4af1ab3a11c6f30cede94865dfad852852240d7e21fb57c86dab46e4cb8b1299',
     'v2026.11.23.3': 'c3f66c7488dc24ae4879ad742114a2744e1acfebed7c1ea8007ae455bf51b11c',
     'v2026.11.23.2': 'c9ae163a61a068154a8fda473b348c525c6ecb72bf45aae15c7793135f6bd0e9',
     'v2026.11.23.1': '6a026a9e141689ec64a182be3ff45659ecde84acf7f083235c41eebd19f7b9c7',
@@ -2266,10 +2267,10 @@ WORKBENCH_DEPLOYMENT_ROOT=/data/basil
 
 # Deploy/restart reuse cached images; Update pulls explicitly.
 WORKBENCH_IMAGE=ghcr.io/basilos-ai/workbench-backend
-WORKBENCH_VERSION=v1.8.61
+WORKBENCH_VERSION=v1.8.68
 RESOURCE_HUB_SEED_ENABLED=true
 WORKBENCH_FRONTEND_IMAGE=ghcr.io/basilos-ai/workbench-frontend
-WORKBENCH_FRONTEND_VERSION=v1.8.54
+WORKBENCH_FRONTEND_VERSION=v1.8.56
 RUNTIME_IMAGE=ghcr.io/basilos-ai/workbench-runtime
 RUNTIME_VERSION=v1.8.32
 RUNTIME_SANDBOX_IMAGE=ghcr.io/basilos-ai/workbench-runtime-sandbox
