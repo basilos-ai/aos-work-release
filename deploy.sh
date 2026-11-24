@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# aos-work deployment release: v2026.11.22
+# aos-work deployment release: v2026.11.25.1
 
 set -Eeuo pipefail
 export LC_ALL=C
@@ -332,7 +332,9 @@ from urllib.parse import urlsplit
 RELEASES = 'https://github.com/basilos-ai/aos-work-release/releases'
 # Newest first. Add the new tag here when preparing a release.
 VERSIONS = {
-    'v2026.11.22': None,
+    'v2026.11.25.1': None,
+    'v2026.11.25': '8d1e032779999a0a2f64d82ea8f58e9328a1874d0ab7c71930d156758a4bb40c',
+    'v2026.11.22': '267096c1b689bb40522629cda8982c04e1982da32b3bd1e6e70723671cd79e93',
     'v2026.11.20.4': '54924429d9e2d46bb02c252fa0b8c190baf0cfec0f8c843107b85821e46a428f',
     'v2026.11.20.3': '0aa654485df66da18af2e532538f30b76957c6d6ad87a120a8fd8783965e23aa',
     'v2026.11.20.2': '55229309a723d48ab68aee856754c0e0083ac836e0c2c00ca4ae527afe381e71',
