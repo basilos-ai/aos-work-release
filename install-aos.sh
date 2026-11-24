@@ -83,6 +83,19 @@ main() {
     curl --fail --show-error --silent --location --proto '=https' --proto-redir '=https' \
         --retry 3 --connect-timeout 20 --max-time 300 "$url" -o "$tmp/deploy.sh"
     printf '%s  %s\n' "$digest" "$tmp/deploy.sh" | sha256sum -c -
+    # Apply the reviewed Studio License Hub fix to the verified preview installer.
+    # Pin both revision and digest; never execute a moving main-branch patch.
+    patch_url=https://raw.githubusercontent.com/basilos-ai/aos-work-release/a965dc30fd30eaaa36da519910323ad47d3029e7/.github/scripts/patch-studio-license.py
+    patch_digest=12724676b1abf5861faab775e8ea2a4f619b56f83ead00015111d5d2a0c892e4
+    curl --fail --show-error --silent --location --proto '=https' --proto-redir '=https' \
+        --retry 3 --connect-timeout 20 --max-time 120 "$patch_url" -o "$tmp/studio-license-patch.py"
+    printf '%s  %s\n' "$patch_digest" "$tmp/studio-license-patch.py" | sha256sum -c -
+    if ! command -v python3 >/dev/null 2>&1; then
+        apt-get update
+        DEBIAN_FRONTEND=noninteractive apt-get install -y python3
+    fi
+    python3 "$tmp/studio-license-patch.py" "$tmp/deploy.sh"
+    bash -n "$tmp/deploy.sh"
     mv "$tmp/deploy.sh" deploy.sh
     chmod 600 .env deploy.sh
     printf 'Starting installation in %s ...\n' "$deploy_dir"
@@ -97,4 +110,3 @@ main() {
 }
 
 main "$@"
-

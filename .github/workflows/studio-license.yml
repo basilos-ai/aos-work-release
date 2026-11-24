@@ -1,0 +1,33 @@
+name: Studio license deployment
+on:
+  pull_request:
+    paths: ['deploy.sh', 'install-aos.sh', '.github/scripts/patch-studio-license.py', '.github/tests/*studio*', '.github/workflows/studio-license.yml', 'docker-compose.studio.yaml', '.env.studio']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: |
+          bash -n deploy.sh
+          sh -n install-aos.sh
+          bash deploy.sh --self-test
+          python .github/tests/test_studio_license.py
+      - run: |
+          docker pull python:3.11-slim
+          docker pull nginx:alpine
+          python .github/tests/studio_license_docker_check.py
+      - name: Verify the pinned quick-install path too
+        run: |
+          curl -fL --retry 3 https://github.com/basilos-ai/aos-work-release/releases/download/v2026.11.24-quick-install-preview.1/deploy.sh -o /tmp/quick.sh
+          echo 'dcef9452a473c5bf62cf85d72eb2d1115b2c72486ca0a7bef33de5028723d997  /tmp/quick.sh' | sha256sum -c -
+          python .github/scripts/patch-studio-license.py /tmp/quick.sh
+          bash -n /tmp/quick.sh
+          INSTALLER_UNDER_TEST=/tmp/quick.sh python .github/tests/test_studio_license.py
+          INSTALLER_UNDER_TEST=/tmp/quick.sh python .github/tests/studio_license_docker_check.py
