@@ -1600,8 +1600,14 @@ def apply_urls(target, domain):
                     FRONTEND_OAUTH_RESULT_URL=url, BASILCRAW_API_HOST=domain))
         groups = ['workbench']
     elif target == 'studio':
-        ops.edit_env(ops.env_path('studio'), {'ASSETS_SEARCH_SNAPSHOT_URL': url + '/basilos/asset/search-embed',
-                    'VIEW_SNAPSHOT_URL': url + '/basilos/studio/engine/multi-dim-table-embed'})
+        changes = {'ASSETS_SEARCH_SNAPSHOT_URL': url + '/basilos/asset/search-embed',
+                    'VIEW_SNAPSHOT_URL': url + '/basilos/studio/engine/multi-dim-table-embed'}
+        current = ops.read_env(ops.env_path('studio'))
+        previous_url = current.get('ASSETS_SEARCH_SNAPSHOT_URL', '').removesuffix('/basilos/asset/search-embed')
+        callback_path = '/typekey/api/v1/system/license/webhook'
+        if current.get('LICENSE_HUB_WEBHOOK_URL', '') in ('', previous_url + callback_path):
+            changes['LICENSE_HUB_WEBHOOK_URL'] = url + callback_path
+        ops.edit_env(ops.env_path('studio'), changes)
         groups = ['studio']
     else:
         ops.edit_env(ops.env_path('middleware'), {'MINIO_EXPOSE_URL': url})
@@ -1969,6 +1975,11 @@ STUDIO_FRONTEND_IMAGE=ghcr.io/basilos-ai/studio-frontend
 STUDIO_FRONTEND_VERSION=v1.8.14
 NODE_SANDBOX_IMAGE=ghcr.io/basilos-ai/studio-node-sandbox
 NODE_SANDBOX_VERSION=v1.0.0
+
+# Production License Hub for Studio online activation
+LICENSE_HUB_API_URL=https://license-hub.aos.work
+# Public HTTPS callback to this Studio deployment
+LICENSE_HUB_WEBHOOK_URL=
 
 # Studio published host ports
 STUDIO_API_HOST_PORT=12001
@@ -3008,6 +3019,9 @@ ensure_studio_configuration() {
     studio_frontend_port="$(studio_get_env STUDIO_FRONTEND_HOST_PORT)"
     info "Studio frontend host port: ${studio_frontend_port}. Use the external URL for HTTPS or a reverse proxy."
     prompt_url studio_frontend_url "Studio frontend URL" "$(deployment_access_url "$studio_frontend_port")"
+  fi
+  if [[ "$studio_frontend_url" == https://* && -z "$(studio_get_env LICENSE_HUB_WEBHOOK_URL)" ]]; then
+    studio_set_env LICENSE_HUB_WEBHOOK_URL "${studio_frontend_url%/}/typekey/api/v1/system/license/webhook"
   fi
   studio_set_env ASSETS_SEARCH_SNAPSHOT_URL "${studio_frontend_url%/}$assets_path"
   studio_set_env VIEW_SNAPSHOT_URL "${studio_frontend_url%/}/basilos/studio/engine/multi-dim-table-embed"
