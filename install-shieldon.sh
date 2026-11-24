@@ -4,6 +4,18 @@
 set -eu
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 download() { curl -fL --proto '=https' --proto-redir '=https' --retry 3 --connect-timeout 20 --max-time 600 "$1" -o "$2"; }
+wait_for_acme() {
+  acme_domain=$1
+  acme_token=$2
+  acme_attempt=0
+  while [ "$acme_attempt" -lt 20 ]; do
+    acme_body=$(curl --noproxy '*' -fsS --resolve "$acme_domain:80:127.0.0.1" --connect-timeout 2 --max-time 5 "http://$acme_domain/.well-known/acme-challenge/$acme_token" 2>/dev/null) || acme_body=''
+    [ "$acme_body" != "$acme_token" ] || return 0
+    acme_attempt=$((acme_attempt + 1))
+    sleep 1
+  done
+  return 1
+}
 
 main() {
   [ "$#" -eq 1 ] || fail 'Usage: sudo sh install-shieldon.sh shieldon.example.com'
@@ -184,9 +196,13 @@ NGINX
   probe_file="/var/www/shieldon-acme/.well-known/acme-challenge/$probe"
   printf '%s' "$probe" > "$probe_file"
   chmod 0644 "$probe_file"
-  actual=$(curl --noproxy '*' -fsS --resolve "$domain:80:127.0.0.1" --max-time 15 "http://$domain/.well-known/acme-challenge/$probe") || actual=''
+  # Reload signals Nginx asynchronously; an immediate request may use the old virtual host.
+  printf 'Waiting for Nginx to serve the ACME validation file ...\n'
+  if ! wait_for_acme "$domain" "$probe"; then
+    printf 'Retained diagnostic file: %s\n' "$probe_file" >&2
+    fail 'Local ACME webroot still unavailable after 20 attempts. Inspect Nginx access/error logs and this file before retrying.'
+  fi
   rm -f "$probe_file"
-  [ "$actual" = "$probe" ] || fail 'Local ACME webroot check failed. Inspect /var/log/nginx/error.log and directory traversal permissions.'
   # Public challenge files must be readable by Nginx, independent of the secret-file umask.
   (
     umask 022
@@ -242,7 +258,7 @@ NGINX
   systemctl enable --now certbot.timer
 
   printf '\n[5/5] Verifying HTTPS and services\n'
-  curl -fsS --resolve "$domain:443:127.0.0.1" --max-time 30 "https://$domain/health" >/dev/null
+  curl --noproxy '*' -fsS --retry 10 --retry-all-errors --retry-delay 1 --resolve "$domain:443:127.0.0.1" --max-time 10 "https://$domain/health" >/dev/null
   docker compose --env-file .env -f compose.yaml ps -a
   docker compose --env-file .env -f compose.middleware.yaml ps
   printf '\nInstalled: https://%s\nDirectory: %s\n' "$domain" "$root"
