@@ -1,5 +1,7 @@
 # AOS Work 私有化部署
 
+Studio 的生产 License Hub、HTTPS 回调及域名更换说明见 [Studio License 部署与验收](docs/studio-license-deployment.md)。
+
 [![观看 AOS Work 部署教程](docs/media/aos-work-deployment.jpg)](https://basilos-ai.github.io/aos-work-release/)
 
 | 语言 / Language | 在线观看 / Watch | 视频 / MP4 | 字幕 / Captions |

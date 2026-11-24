@@ -791,7 +791,7 @@ def inventory(root):
                 continue
             site = domain.NGINX_DIR / ('basil-' + target + '.conf')
             if site.is_file():
-                expected = domain.nginx_text(settings['domain'], settings['port'], True)
+                expected = domain.nginx_text(settings['domain'], settings['port'], True, target)
                 # Previous launchers emitted the same HTTPS proxy without the TLS challenge location.
                 legacy = expected[:expected.index('    listen 443 ssl;')] + expected[expected.index('    listen 443 ssl;'):].replace(
                     expected[expected.index('    location ^~'):expected.index('    location /')], '', 1)
@@ -1394,6 +1394,39 @@ TARGETS = {
 }
 
 
+
+LICENSE_HUB_DEFAULT = 'https://license-hub.aos.work'
+LICENSE_CALLBACK_PATH = '/typekey/api/v1/system/license/webhook'
+
+
+def studio_license_changes(current, public_url):
+    public_url = public_url.rstrip('/')
+    previous = current.get('ASSETS_SEARCH_SNAPSHOT_URL', '').removesuffix('/basilos/asset/search-embed').rstrip('/')
+    callback = current.get('LICENSE_HUB_WEBHOOK_URL', '')
+    changes = {}
+    hub = current.get('LICENSE_HUB_API_URL', '')
+    if not hub or hub.startswith('CHANGE_ME'):
+        changes['LICENSE_HUB_API_URL'] = LICENSE_HUB_DEFAULT
+    if public_url.startswith('https://') and (
+            not callback or callback.startswith('CHANGE_ME') or
+            (previous and callback == previous + LICENSE_CALLBACK_PATH)):
+        changes['LICENSE_HUB_WEBHOOK_URL'] = public_url + LICENSE_CALLBACK_PATH
+    return changes
+
+
+def sync_studio_license(public_url):
+    path = ops.env_path('studio')
+    ops.edit_env(path, studio_license_changes(ops.read_env(path), public_url))
+
+
+def verify_studio_license():
+    current = ops.read_env(ops.env_path('studio'))
+    for key in ('LICENSE_HUB_API_URL', 'LICENSE_HUB_WEBHOOK_URL'):
+        expected = current.get(key, '')
+        if expected and ops.capture(ops.compose('studio') + ['exec', '-T', 'studio', 'printenv', key]).strip() != expected:
+            raise ValueError('Studio backend has stale ' + key + '; recreate the backend before activating a license.')
+
+
 def valid_domain(value):
     try:
         ipaddress.ip_address(value)
@@ -1402,7 +1435,7 @@ def valid_domain(value):
         return len(value) <= 253 and '.' in value and all(re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', x) for x in value.split('.')) and not value.endswith(('.local', '.localhost', '.test', '.invalid'))
 
 
-def nginx_text(domain, port, tls):
+def nginx_text(domain, port, tls, target=None):
     challenge = '''    location ^~ /.well-known/acme-challenge/ {
         root /var/www/basil-acme;
         try_files $uri =404;
@@ -1425,6 +1458,18 @@ def nginx_text(domain, port, tls):
         proxy_redirect off;
     }}
 '''
+    if target == 'studio':
+        api_port = int(ops.read_env(ops.env_path('studio'))['STUDIO_API_HOST_PORT'])
+        if not 1 <= api_port <= 65535:
+            raise ValueError('Invalid Studio API port')
+        proxy = f'''    location = /typekey/api/v1/system/license/webhook {{
+        proxy_pass http://127.0.0.1:{api_port};
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }}
+''' + proxy
     text = f'''# Managed by Basil deploy.sh
 map $http_upgrade $basil_{domain.replace('.', '_').replace('-', '_')}_upgrade {{
     default upgrade;
@@ -1505,7 +1550,7 @@ def refresh_port(root, group, key, port):
             raise ValueError('Run sudo bash deploy.sh to update a managed proxy.')
         if not valid_domain(item['domain']) or not old.startswith('# Managed by Basil deploy.sh'):
             raise ValueError(f'Unexpected managed site configuration: {conf}')
-        ops.atomic_write(conf, nginx_text(item['domain'], port, True))
+        ops.atomic_write(conf, nginx_text(item['domain'], port, True, target))
         conf.chmod(0o644)
         try:
             reload_nginx()
@@ -1556,7 +1601,7 @@ def setup(target, domain, port):
     challenge.parent.mkdir(parents=True, exist_ok=True)
     challenge.write_text(token); challenge.chmod(0o644)
     try:
-        ops.atomic_write(conf, nginx_text(domain, port, False)); conf.chmod(0o644)
+        ops.atomic_write(conf, nginx_text(domain, port, False, target)); conf.chmod(0o644)
         reload_nginx()
         challenge_path = f'/.well-known/acme-challenge/{token}'
         wait_for_site(domain, challenge_path, token, tls=False)
@@ -1569,7 +1614,7 @@ def setup(target, domain, port):
         except subprocess.CalledProcessError as error:
             raise ValueError(f'Certificate request failed for {domain}. See the Certbot error above. For HTTP-01 failures, '
                              'check that public DNS and TCP port 80 route the challenge path to this Nginx instance.') from error
-        ops.atomic_write(conf, nginx_text(domain, port, True)); conf.chmod(0o644)
+        ops.atomic_write(conf, nginx_text(domain, port, True, target)); conf.chmod(0o644)
         reload_nginx()
         wait_for_site(domain, challenge_path, token)
         check_domain_route(domain, challenge_path, token)
@@ -1600,13 +1645,10 @@ def apply_urls(target, domain):
                     FRONTEND_OAUTH_RESULT_URL=url, BASILCRAW_API_HOST=domain))
         groups = ['workbench']
     elif target == 'studio':
-        changes = {'ASSETS_SEARCH_SNAPSHOT_URL': url + '/basilos/asset/search-embed',
-                    'VIEW_SNAPSHOT_URL': url + '/basilos/studio/engine/multi-dim-table-embed'}
         current = ops.read_env(ops.env_path('studio'))
-        previous_url = current.get('ASSETS_SEARCH_SNAPSHOT_URL', '').removesuffix('/basilos/asset/search-embed')
-        callback_path = '/typekey/api/v1/system/license/webhook'
-        if current.get('LICENSE_HUB_WEBHOOK_URL', '') in ('', previous_url + callback_path):
-            changes['LICENSE_HUB_WEBHOOK_URL'] = url + callback_path
+        changes = studio_license_changes(current, url)
+        changes.update(ASSETS_SEARCH_SNAPSHOT_URL=url + '/basilos/asset/search-embed',
+                       VIEW_SNAPSHOT_URL=url + '/basilos/studio/engine/multi-dim-table-embed')
         ops.edit_env(ops.env_path('studio'), changes)
         groups = ['studio']
     else:
@@ -1625,12 +1667,20 @@ def apply_urls(target, domain):
     for group in groups:
         if running(group, group):
             ops.up(group, [group], recreate=True, no_deps=True, interactive=False)
+            if group == 'studio':
+                verify_studio_license()
     for group, frontend in [('studio', 'studio-frontend'), ('workbench', 'workbench-frontend')]:
         if running(group, frontend):
             ops.run(ops.compose(group) + ['exec', '-T', frontend, 'nginx', '-s', 'reload'])
 
 
 def main():
+    if len(sys.argv) == 3 and sys.argv[1] == '--sync-studio-license':
+        sync_studio_license(sys.argv[2])
+        return
+    if len(sys.argv) == 2 and sys.argv[1] == '--verify-studio-license':
+        verify_studio_license()
+        return
     if os.geteuid() != 0:
         raise ValueError('Domain setup requires root. Run sudo bash deploy.sh.')
     services = {'1': 'workbench', '2': 'studio', '3': 'storage'}
@@ -3020,9 +3070,7 @@ ensure_studio_configuration() {
     info "Studio frontend host port: ${studio_frontend_port}. Use the external URL for HTTPS or a reverse proxy."
     prompt_url studio_frontend_url "Studio frontend URL" "$(deployment_access_url "$studio_frontend_port")"
   fi
-  if [[ "$studio_frontend_url" == https://* && -z "$(studio_get_env LICENSE_HUB_WEBHOOK_URL)" ]]; then
-    studio_set_env LICENSE_HUB_WEBHOOK_URL "${studio_frontend_url%/}/typekey/api/v1/system/license/webhook"
-  fi
+  python3 "$SUPPORT_DIR/domain-ssl.py" --sync-studio-license "$studio_frontend_url"
   studio_set_env ASSETS_SEARCH_SNAPSHOT_URL "${studio_frontend_url%/}$assets_path"
   studio_set_env VIEW_SNAPSHOT_URL "${studio_frontend_url%/}/basilos/studio/engine/multi-dim-table-embed"
 }
@@ -3036,6 +3084,7 @@ deploy_studio() {
   mkdir -p "$DEPLOY_DIR/data/studio-logs"
   studio_compose config --quiet
   ops up studio
+  python3 "$SUPPORT_DIR/domain-ssl.py" --verify-studio-license
   studio_compose ps
   studio_frontend_url="$(studio_get_env ASSETS_SEARCH_SNAPSHOT_URL)"
   studio_frontend_url="${studio_frontend_url%/basilos/asset/search-embed}"
