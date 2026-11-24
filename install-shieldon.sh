@@ -141,8 +141,27 @@ PY
   for key in $(sed -n 's/^\([A-Z_][A-Z_0-9]*\)=.*/\1/p' .env); do unset "$key"; done
 
   printf '\n[3/5] Configuring HTTPS (DNS and inbound TCP 80/443 must be ready)\n'
-  install -d -m 0755 /var/www/shieldon-acme/.well-known/acme-challenge
-  chmod 0755 /var/www/shieldon-acme /var/www/shieldon-acme/.well-known /var/www/shieldon-acme/.well-known/acme-challenge
+  # Prepare every directory explicitly, including on certificate renewals.
+  # Installing only the leaf does not reliably repair existing private parents.
+  acme_hook=/etc/letsencrypt/renewal-hooks/pre/shieldon-oneclick.sh
+  install -d -m 0755 /etc/letsencrypt/renewal-hooks/pre
+  if [ -L "$acme_hook" ] || { [ -e "$acme_hook" ] && ! grep -Fxq "$marker" "$acme_hook"; }; then
+    fail "Unmanaged ACME preparation hook exists: $acme_hook"
+  fi
+  {
+    printf '#!/bin/sh\n%s\n' "$marker"
+    cat <<'ACME_HOOK'
+set -eu
+umask 022
+for directory in /var/www/shieldon-acme /var/www/shieldon-acme/.well-known /var/www/shieldon-acme/.well-known/acme-challenge; do
+  [ ! -L "$directory" ] || { echo "Refusing symlink: $directory" >&2; exit 1; }
+  install -d -m 0755 "$directory"
+  chmod 0755 "$directory"
+done
+ACME_HOOK
+  } > "$acme_hook"
+  chmod 0755 "$acme_hook"
+  sh "$acme_hook"
   # Keep an existing HTTPS endpoint during retry; create HTTP challenge site only on first run.
   if [ ! -f "$site" ]; then
     cat > "$site" <<NGINX
