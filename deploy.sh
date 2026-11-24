@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# aos-work deployment release: v2026.11.23.4
+# aos-work deployment release: v2026.11.24-quick-install-preview.1
 
 set -Eeuo pipefail
 export LC_ALL=C
@@ -26,6 +26,14 @@ PACKAGE_FILES = (
 DIRECTORIES = ('data', 'compose', 'workbench', 'workbench/storage', 'workbench/storage/nginx',
                'workbench/storage/templates')
 STATE = '.aos-install/baseline.json'
+QUICK_HTTP_PORTS = {'WORKBENCH_FRONTEND_HOST_PORT', 'STUDIO_FRONTEND_HOST_PORT', 'MINIO_API_HOST_PORT'}
+
+
+def quick_install_mode(root):
+    state = root / '.aos-install'
+    if not (state / 'quick-input').is_file():
+        return None
+    return 'http' if (state / 'quick-http').is_file() else 'https'
 
 
 def save(path, obj):
@@ -330,6 +338,13 @@ import tempfile
 from urllib.parse import urlsplit
 
 RELEASES = 'https://github.com/basilos-ai/aos-work-release/releases'
+# Release metadata for the verified archive paired with this quick installer.
+QUICK_RELEASE = {
+    'tag': 'v2026.11.23.4',
+    'sha256': '4af1ab3a11c6f30cede94865dfad852852240d7e21fb57c86dab46e4cb8b1299',
+}
+# Match the release's short-form port publications before Compose expands them.
+PUBLISHED_PORT = re.compile(r"""(?m)^([ \t]*-[ \t]*['"])(\$\{([A-Z_]+_HOST_PORT)(?::-[^}]+)?\}:)""")
 # Newest first. Add the new tag here when preparing a release.
 VERSIONS = {
     'v2026.11.23.4': None,
@@ -462,15 +477,23 @@ def env_defaults(lines):
     return dict(line.split('=', 1) for line in lines if line and not line.lstrip().startswith('#') and '=' in line)
 
 
-def install(root, folder, url):
+def set_quick_port_bindings(source, mode):
+    def binding(match):
+        if mode == 'http' and match[3] in deployment_state.QUICK_HTTP_PORTS:
+            return match[0]
+        return f'{match[1]}127.0.0.1:{match[2]}'
+
+    source.write_text(PUBLISHED_PORT.sub(binding, source.read_text()))
+
+
+def install(root, folder, url, digest=None):
     name = check_url(url)
     archive = folder / name
     check_path(root, archive)
-    digest = None
     known_versions = {**ARCHIVED_VERSIONS, **VERSIONS}
     for tag, known in known_versions.items():
         if url == f'{RELEASES}/download/{tag}/deploy.tar.gz':
-            digest = known
+            digest = digest or known
     sums = folder / 'SHA256SUMS'
     check_path(root, sums)
     if sums.is_file():
@@ -504,6 +527,7 @@ def install(root, folder, url):
             for name in ENV:
                 inputs[name] = stage / (name + '.example')
         staged = []
+        quick_mode = deployment_state.quick_install_mode(root)
         for name, src in sorted(inputs.items()):
             dest = root / name
             check_path(root, dest)
@@ -521,6 +545,8 @@ def install(root, folder, url):
                               if defaults.get(k) != v or (k in RESOURCE_KEYS[name] and v and 'CHANGE_ME' not in v)}
                     lines = [edited.pop(line.partition('=')[0], line) for line in lines]
                     src.write_text('\n'.join([*lines, *edited.values()]) + '\n')
+            if quick_mode and (name.startswith('compose/') or name.startswith('docker-compose.')):
+                set_quick_port_bindings(src, quick_mode)
             if name in WORKBENCH and dest.exists():
                 continue
             staged.append((src, dest))
@@ -549,7 +575,7 @@ def offline(folder, name):
           f'Optionally upload its SHA256SUMS to {folder}. Run sudo bash deploy.sh again to resume.')
 
 
-def run(root, resume):
+def run(root, resume, *, quick=False):
     state = root / '.aos-install'
     check_path(root, state)
     state.mkdir(mode=0o700, exist_ok=True)
@@ -559,7 +585,32 @@ def run(root, resume):
         fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         pending = state / 'pending.json'
         check_path(root, pending)
-        if resume:
+        quick_digest = None
+        if quick:
+            release_path = state / 'quick-release.json'
+            check_path(root, release_path)
+            has_release = release_path.is_file()
+            release = json.loads(release_path.read_text()) if has_release else QUICK_RELEASE
+            if not isinstance(release, dict):
+                raise ValueError('Invalid quick install release metadata.')
+            tag, quick_digest = release.get('tag'), release.get('sha256')
+            if not (isinstance(tag, str) and re.fullmatch(r'v\d{4}\.\d{2}\.\d{2}(?:\.\d+)?', tag)
+                    and isinstance(quick_digest, str) and re.fullmatch(r'[0-9a-f]{64}', quick_digest)):
+                raise ValueError('Invalid quick install release metadata.')
+            url = f'{RELEASES}/download/{tag}/deploy.tar.gz'
+            selection = state / 'selected.json'
+            check_path(root, selection)
+            if pending.is_file() and json.loads(pending.read_text())['url'] != url:
+                raise ValueError('Another server package is pending in this directory. Resume with the original installer.')
+            if selection.is_file() and json.loads(selection.read_text())['url'] != url:
+                raise ValueError('This directory now uses a different release. Use the original installer or the deployment menu.')
+            if not has_release:
+                deployment_state.save(release_path, release)
+            print(f'Quick install package: {tag} (SHA-256: {quick_digest})', flush=True)
+            if selection.is_file():
+                pending.unlink(missing_ok=True)
+                return True
+        elif resume:
             url = json.loads(pending.read_text())['url']
         else:
             url = choose()
@@ -592,24 +643,32 @@ def run(root, resume):
                 finally:
                     partial.unlink(missing_ok=True)
             except (OSError, subprocess.CalledProcessError):
-                offline(folder, name)
+                if quick:
+                    print(f'Download failed. Retry quick install or upload the release asset to {archive}.')
+                else:
+                    offline(folder, name)
                 return False
         try:
-            install(root, folder, url)
+            install(root, folder, url, digest=quick_digest)
         except (OSError, ValueError, EOFError, tarfile.TarError, subprocess.CalledProcessError) as error:
             print(f'Package validation failed: {error}')
-            offline(folder, name)
+            if quick:
+                if archive.stat().st_size > MAX_BYTES or file_digest(archive) != quick_digest:
+                    archive.unlink()
+            else:
+                offline(folder, name)
             return False
-        print('Server package ready. Select Deploy AosWork to start services.', flush=True)
+        print('Server package ready.' if quick else 'Server package ready. Select Deploy AosWork to start services.', flush=True)
         pending.unlink()
         return True
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('action', choices=('choose', 'resume'))
+    parser.add_argument('action', choices=('choose', 'resume', 'quick'))
     try:
-        ready = run(Path(os.environ['BASIL_DEPLOY_DIR']).resolve(), parser.parse_args().action == 'resume')
+        action = parser.parse_args().action
+        ready = run(Path(os.environ['BASIL_DEPLOY_DIR']).resolve(), action == 'resume', quick=action == 'quick')
     except (ValueError, KeyError, OSError, EOFError) as error:
         parser.exit(1, f'Package installation failed: {error}\n')
     # 2 means cancelled or waiting for upload.
@@ -829,7 +888,8 @@ def finish_reset(root):
                     (p / name).unlink(missing_ok=True)
                 if not any(p.iterdir()):
                     p.rmdir()
-        for name in ('lock', 'pending.json', 'selected.json', 'baseline.json'):
+        for name in ('lock', 'pending.json', 'selected.json', 'baseline.json',
+                     'quick-input', 'quick-complete', 'quick-http', 'quick-ip', 'quick-release.json'):
             (cache / name).unlink(missing_ok=True)
         deployment_state.save(cache / 'cleanup-pending', 'local-restored')
     host_action(root, 'cleanup')
@@ -913,6 +973,7 @@ cat > "$SUPPORT_DIR/deploy-support.py" <<'AOS_EMBEDDED_FILE_END'
 import argparse
 import deployment_state
 import datetime
+import ipaddress
 import json
 import importlib.util
 import os
@@ -1187,6 +1248,11 @@ def service_label(service):
     return service.replace('workbench', 'AosWork', 1) if service.startswith('workbench') else service
 
 
+def host_port_key(group, service, mapping):
+    return next((key for key, target in PORTS.get(group, {}).get(service, [])
+                 if target is None or target == int(mapping['target'])), None)
+
+
 def ensure_ports(group, selected, cfg, *, interactive=True, owners=None, reserved=None):
     owners = port_owners() if owners is None else owners
     reserved = {} if reserved is None else reserved
@@ -1196,7 +1262,7 @@ def ensure_ports(group, selected, cfg, *, interactive=True, owners=None, reserve
         for mapping in spec.get('ports', []):
             published = str(mapping['published'])
             old = int(published) if published.isdecimal() else 0
-            key = next((k for k, target in PORTS.get(group, {}).get(service, []) if target is None or target == int(mapping['target'])), None)
+            key = host_port_key(group, service, mapping)
             current = old
             while True:
                 owner = (cfg['name'], service)
@@ -1246,7 +1312,7 @@ def ingress_listener(port):
     return False, 'listener owner could not be verified; run the installer with sudo'
 
 
-def report_host():
+def report_host(*, check_https=True):
     gb = 10**9
     cpus = len(os.sched_getaffinity(0))
     memory = os.sysconf('SC_PHYS_PAGES') * os.sysconf('SC_PAGE_SIZE')
@@ -1258,17 +1324,19 @@ def report_host():
          f'Storage: {disk.total / gb:.2f} GB total, {disk.free / gb:.2f} GB available '
          f'on {ROOT} (minimum 100 GB total)'),
     ]
-    for port in (80, 443):
-        usable, detail = ingress_listener(port)
-        checks.append((usable, f'TCP {port}: {detail}'))
+    if check_https:
+        for port in (80, 443):
+            usable, detail = ingress_listener(port)
+            checks.append((usable, f'TCP {port}: {detail}'))
     print('Host preflight')
     for ok, detail in checks:
         print(f'[{"OK" if ok else "WARN"}] {detail}')
-    print('Public routing is checked by domain during HTTPS setup. Allow inbound TCP 80 and 443.')
+    if check_https:
+        print('Public routing is checked by domain during HTTPS setup. Allow inbound TCP 80 and 443.')
     return all(ok for ok, _ in checks)
 
 
-def preflight():
+def preflight(*, interactive=True):
     deployment_state.begin(ROOT)
     prepare_envs()
     owners = port_owners()
@@ -1285,7 +1353,7 @@ def preflight():
                     continue
             cfg['services'][service] = {'ports': [
                 {'published': env[key], 'target': target or 0} for key, target in mappings]}
-        ensure_ports(group, cfg['services'], cfg, owners=owners, reserved=reserved)
+        ensure_ports(group, cfg['services'], cfg, interactive=interactive, owners=owners, reserved=reserved)
     print('Application ports checked.')
 
 
@@ -1305,9 +1373,15 @@ def up(group, services=(), recreate=False, no_deps=False, *, interactive=True):
     before = {g: env_path(g).read_text() for g in PORTS if env_path(g).exists()}
     cfg = config(group)
     selected = select_services(cfg, services, no_deps)
+    quick_mode = deployment_state.quick_install_mode(ROOT)
+    public_ports = deployment_state.QUICK_HTTP_PORTS if quick_mode == 'http' else set()
     for service in selected:
         if 'CHANGE_ME' in json.dumps(cfg['services'][service]):
             raise ValueError(f'Configure placeholders for {service_label(service)} before deployment.')
+        if quick_mode:
+            for mapping in cfg['services'][service].get('ports', []):
+                if mapping.get('host_ip') != '127.0.0.1' and host_port_key(group, service, mapping) not in public_ports:
+                    raise ValueError(f'{service_label(service)} has a port that must be bound to 127.0.0.1.')
     for image in dict.fromkeys(cfg['services'][s]['image'] for s in selected):
         pull_image(image, interactive=interactive)
     while True:
@@ -1334,31 +1408,139 @@ def up(group, services=(), recreate=False, no_deps=False, *, interactive=True):
             raise ValueError('Docker reported a port conflict. Check host listeners and Docker mappings.')
 
 
+def check_quick_host():
+    selected = (ROOT / '.aos-install/selected.json').is_file()
+    for group in PORTS:
+        project = 'basil-' + group
+        owners = capture(['docker', 'ps', '-a', '--filter', f'label=com.docker.compose.project={project}',
+                          '--format', '{{.Label "com.docker.compose.project.working_dir"}}']).splitlines()
+        if owners and (not selected or any(owner not in (str(ROOT), str(ROOT / 'compose')) for owner in owners)):
+            raise ValueError(f'Docker project {project} already belongs to another installation.')
+    network = capture(['docker', 'network', 'ls', '--format', '{{.Name}}']).splitlines()
+    if 'basilos' in network:
+        owner = capture(['docker', 'network', 'inspect', 'basilos', '--format',
+                         '{{index .Labels "ai.basilos.deploy.directory"}}']).strip()
+        if not selected or owner != str(ROOT):
+            raise ValueError('Docker network basilos already belongs to another installation.')
+
+
+def format_server_ip(value):
+    if value.startswith('[') and value.endswith(']'):
+        value = value[1:-1]
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        return None
+    address = getattr(address, 'ipv4_mapped', None) or address
+    if '%' in value or address.is_unspecified or address.is_loopback or address.is_multicast or address.is_link_local:
+        return None
+    return f'[{address}]' if address.version == 6 else str(address)
+
+
+def detect_server_ip():
+    # UDP connect selects the source address from the routing table without sending a packet.
+    for family, destination in ((socket.AF_INET, '192.0.2.1'), (socket.AF_INET6, '2001:db8::1')):
+        try:
+            with socket.socket(family, socket.SOCK_DGRAM) as probe:
+                probe.connect((destination, 9))
+                host = format_server_ip(probe.getsockname()[0])
+        except OSError:
+            continue
+        if host:
+            return host
+    if shutil.which('ip'):
+        interfaces = json.loads(capture(['ip', '-j', 'address', 'show', 'up', 'scope', 'global']))
+        for interface in interfaces:
+            if re.fullmatch(r'docker\d+|br-[0-9a-f]{12}|veth.*', interface['ifname']):
+                continue
+            for address in interface.get('addr_info', []):
+                host = format_server_ip(address['local'])
+                if host:
+                    return host
+    return None
+
+
+def select_quick_ip(requested):
+    path = ROOT / '.aos-install/quick-ip'
+    host = format_server_ip(requested) if requested else None
+    if requested and not host:
+        raise ValueError('Set SERVER_IP to an IP address clients can use to reach this server.')
+    if path.is_file():
+        saved = format_server_ip(path.read_text().strip())
+        if not saved:
+            raise ValueError('The recorded server IP is invalid. Check the quick install state.')
+        if host and host != saved:
+            raise ValueError(f'Resume quick install with the recorded server IP {saved}.')
+        return saved
+    host = host or detect_server_ip()
+    if not host:
+        raise ValueError('Set SERVER_IP to an IP address clients can use to reach this server.')
+    atomic_write(path, host + '\n')
+    return host
+
+
+def verify_quick_services():
+    for group in PORTS:
+        services = config(group)['services']
+        one_shots = {dep for service in services.values() for dep, policy in service.get('depends_on', {}).items()
+                     if policy.get('condition') == 'service_completed_successfully'}
+        # PostgreSQL initialization runs with --rm. Its vector extension is verified on startup.
+        expected = PORTS['middleware'] if group == 'middleware' else services
+        for name in expected:
+            ids = capture(compose(group) + ['ps', '-a', '-q', name]).split()
+            if not ids:
+                raise ValueError(f'{service_label(name)} has no container.')
+            for line in capture(['docker', 'inspect', '--format', '{{json .State}}', *ids]).splitlines():
+                state = json.loads(line)
+                status = state['Status']
+                health = state.get('Health', {}).get('Status', 'unconfigured')
+                if name in one_shots:
+                    healthy = status == 'exited' and state['ExitCode'] == 0
+                else:
+                    healthy = status == 'running' and health in ('healthy', 'unconfigured')
+                label = 'OK' if healthy else 'ERROR'
+                print(f'[{label}] {service_label(name)}: {status}, {health}')
+                if not healthy:
+                    raise ValueError(f'{service_label(name)} did not pass its container health check.')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--non-interactive', action='store_true')
     sub = parser.add_subparsers(dest='action', required=True)
     sub.add_parser('preflight')
     sub.add_parser('host-check')
     sub.add_parser('check-files')
+    sub.add_parser('check-quick-host')
+    select_ip = sub.add_parser('select-quick-ip'); select_ip.add_argument('--address', default='')
+    sub.add_parser('verify-quick-services')
     check = sub.add_parser('check-images'); check.add_argument('group', choices=PORTS)
     pull = sub.add_parser('pull'); pull.add_argument('image'); pull.add_argument('--force', action='store_true')
     start = sub.add_parser('up'); start.add_argument('group', choices=PORTS); start.add_argument('services', nargs='*')
     start.add_argument('--recreate', action='store_true'); start.add_argument('--no-deps', action='store_true')
     args = parser.parse_args()
+    interactive = not args.non_interactive
     if args.action == 'host-check':
-        if not report_host():
+        check_https = interactive or deployment_state.quick_install_mode(ROOT) != 'http'
+        if not report_host(check_https=check_https):
             sys.exit(3)
     elif args.action == 'preflight':
-        preflight()
+        preflight(interactive=interactive)
     elif args.action == 'check-files':
         check_files()
+    elif args.action == 'check-quick-host':
+        check_quick_host()
+    elif args.action == 'select-quick-ip':
+        print(select_quick_ip(args.address))
+    elif args.action == 'verify-quick-services':
+        verify_quick_services()
     elif args.action == 'pull':
-        pull_image(args.image, args.force)
+        pull_image(args.image, args.force, interactive=interactive)
     elif args.action == 'check-images':
         for image in dict.fromkeys(s['image'] for s in config(args.group)['services'].values()):
-            pull_image(image)
+            pull_image(image, interactive=interactive)
     else:
-        up(args.group, args.services, args.recreate, args.no_deps)
+        up(args.group, args.services, args.recreate, args.no_deps, interactive=interactive)
 
 
 if __name__ == '__main__':
@@ -1371,6 +1553,7 @@ AOS_EMBEDDED_FILE_END
 cat > "$SUPPORT_DIR/domain-ssl.py" <<'AOS_EMBEDDED_FILE_END'
 #!/usr/bin/env python3
 """Interactive DNS verification, Nginx and ACME setup (Ubuntu/Debian)."""
+import hashlib
 import importlib.util
 import ipaddress
 import json
@@ -1408,6 +1591,7 @@ def valid_domain(value):
 
 
 def nginx_text(domain, port, tls):
+    upgrade = '$basil_domain_' + hashlib.sha256(domain.encode()).hexdigest()[:16] + '_upgrade'
     challenge = '''    location ^~ /.well-known/acme-challenge/ {
         root /var/www/basil-acme;
         try_files $uri =404;
@@ -1422,7 +1606,7 @@ def nginx_text(domain, port, tls):
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection $basil_{domain.replace('.', '_').replace('-', '_')}_upgrade;
+        proxy_set_header Connection {upgrade};
         proxy_read_timeout 600s;
         proxy_send_timeout 600s;
         proxy_buffering off;
@@ -1431,7 +1615,7 @@ def nginx_text(domain, port, tls):
     }}
 '''
     text = f'''# Managed by Basil deploy.sh
-map $http_upgrade $basil_{domain.replace('.', '_').replace('-', '_')}_upgrade {{
+map $http_upgrade {upgrade} {{
     default upgrade;
     '' close;
 }}
@@ -1520,7 +1704,7 @@ def refresh_port(root, group, key, port):
     ops.atomic_write(state, json.dumps(settings, indent=2) + '\n')
 
 
-def setup(target, domain, port):
+def setup(target, domain, port, *, quick=False):
     if not valid_domain(domain):
         raise ValueError(f'Enter a fully qualified domain without protocol, path or port, e.g. app.example.com.')
     if not 1 <= port <= 65535 or port in (80, 443):
@@ -1542,6 +1726,8 @@ def setup(target, domain, port):
     ops.run(['bash', str(SUPPORT / 'host-state.sh'), 'mark', 'nginx'])
     conf = NGINX_DIR / ('basil-' + target + '.conf')
     conf.parent.mkdir(parents=True, exist_ok=True)
+    if quick and conf.is_symlink():
+        raise ValueError(f'Refusing to edit symlink: {conf}')
     if conf.exists() and not conf.read_text().startswith('# Managed by Basil deploy.sh'):
         raise ValueError('Refusing to overwrite unmanaged configuration: ' + str(conf))
     nginx_all = subprocess.run(['nginx', '-T'], capture_output=True, text=True)
@@ -1552,10 +1738,18 @@ def setup(target, domain, port):
         if re.search(r'\bserver_name\s', line) and domain in line.replace(';', '').split() and current_file != str(conf):
             raise ValueError('Domain already configured in another Nginx site: ' + current_file)
     previous = conf.read_text() if conf.exists() else None
+    state = ROOT / '.domains.json'
     if previous is not None:
-        state = ROOT / '.domains.json'
         if not state.is_file() or target not in json.loads(state.read_text()):
             raise ValueError(f'This deployment has no ownership record for {conf}.')
+    settings = json.loads(state.read_text()) if state.exists() else {}
+    desired = {'domain': domain, 'port': port}
+    if quick:
+        if target in settings and settings[target] != desired:
+            raise ValueError(f'{target} already has different domain or port settings. Use the deployment menu.')
+        # Record ownership before writing the first site, so an interrupted run can retry it.
+        settings[target] = desired
+        ops.atomic_write(state, json.dumps(settings, indent=2) + '\n')
     token = uuid.uuid4().hex
     challenge = ACME_DIR / '.well-known/acme-challenge' / token
     challenge.parent.mkdir(parents=True, exist_ok=True)
@@ -1592,13 +1786,11 @@ def setup(target, domain, port):
     hook.write_text('#!/bin/sh\nset -eu\nnginx -t\nsystemctl reload nginx\n'); hook.chmod(0o755)
     ops.run(['bash', str(SUPPORT / 'host-state.sh'), 'file', str(hook)])
     ops.run(['systemctl', 'enable', '--now', 'certbot.timer'])
-    state = ROOT / '.domains.json'
-    settings = json.loads(state.read_text()) if state.exists() else {}
-    settings[target] = {'domain': domain, 'port': port}
+    settings[target] = desired
     ops.atomic_write(state, json.dumps(settings, indent=2) + '\n')
 
 
-def apply_urls(target, domain):
+def apply_urls(target, domain, *, reload_running=True):
     url = 'https://' + domain
     if target == 'workbench':
         ops.edit_env(ops.env_path('workbench'), dict(APP_URL=url, FRONTEND_URL=url,
@@ -1613,6 +1805,9 @@ def apply_urls(target, domain):
         ops.edit_env(ops.env_path('workbench'), {'MINIO_PUBLIC_BASE_URL': url, 'MINIO_PRESIGN_ENDPOINT': domain,
                     'MINIO_PRESIGN_PORT': '443', 'MINIO_PRESIGN_USE_SSL': 'true'})
         groups = ['studio', 'workbench']
+    if not reload_running:
+        return
+
     def running(group, service):
         if not (ROOT / f'docker-compose.{group}.yaml').is_file():
             return False
@@ -1629,9 +1824,22 @@ def apply_urls(target, domain):
             ops.run(ops.compose(group) + ['exec', '-T', frontend, 'nginx', '-s', 'reload'])
 
 
+def configure_domain(target, domain, *, quick=False):
+    group, key = TARGETS[target]
+    port = int(ops.read_env(ops.env_path(group))[key])
+    setup(target, domain, port, quick=quick)
+    apply_urls(target, domain, reload_running=not quick)
+    print('Domain, certificate and application settings saved: https://' + domain)
+
+
 def main():
     if os.geteuid() != 0:
         raise ValueError('Domain setup requires root. Run sudo bash deploy.sh.')
+    if len(sys.argv) > 1:
+        if len(sys.argv) != 4 or sys.argv[1] != '--configure' or sys.argv[2] not in TARGETS:
+            raise ValueError('Usage: domain-ssl.py [--configure TARGET DOMAIN]')
+        configure_domain(sys.argv[2], sys.argv[3], quick=True)
+        return
     services = {'1': 'workbench', '2': 'studio', '3': 'storage'}
     while True:
         print('Set up domain and HTTPS\n  1) AosWork\n  2) Studio\n  3) Storage\n  0) Back')
@@ -1642,14 +1850,10 @@ def main():
             print('Select a number from 0 to 3.')
             continue
         target = services[choice]
-        group, key = TARGETS[target]
         try:
-            port = int(ops.read_env(ops.env_path(group))[key])
             label = 'AosWork' if target == 'workbench' else target.capitalize()
             domain = ops.ask(f'{label} domain name (e.g. {label.lower()}.example.com)').lower().rstrip('.')
-            setup(target, domain, port)
-            apply_urls(target, domain)
-            print('Domain, certificate and application settings saved: https://' + domain)
+            configure_domain(target, domain)
         except (ValueError, OSError, subprocess.SubprocessError) as error:
             print('[ERROR] ' + str(error), file=sys.stderr)
 
@@ -1674,11 +1878,17 @@ record setup
 if [[ "${1:-}" == start ]]; then record mark docker; systemctl start docker; exit; fi
 apt-get update
 basic=()
-for entry in curl:curl python3:python3 ss:iproute2 nginx:nginx certbot:certbot; do
+requirements=(curl:curl python3:python3 ss:iproute2)
+if [[ "${1:-}" != http-only ]]; then
+  requirements+=(nginx:nginx certbot:certbot)
+fi
+for entry in "${requirements[@]}"; do
   command -v "${entry%:*}" >/dev/null || basic+=("${entry#*:}")
 done
 if (( ${#basic[@]} )); then
-  if ! command -v nginx >/dev/null || ! command -v certbot >/dev/null; then record mark nginx; fi
+  if [[ "${1:-}" != http-only ]] && { ! command -v nginx >/dev/null || ! command -v certbot >/dev/null; }; then
+    record mark nginx
+  fi
   record packages "${basic[@]}"
 fi
 help="$(docker compose up --help 2>/dev/null)" || help=""
@@ -2155,6 +2365,8 @@ STORAGE_MODE=external
 SELECTED_MODE=
 SELECTED_PROVIDER=
 DEPLOYMENT_ACCESS_HOST=
+QUICK_INSTALL=false
+QUICK_ACCESS_MODE=
 
 info() {
   printf '\n==> %s\n' "$*"
@@ -2183,6 +2395,9 @@ prompt_required() {
   local default_value="${3-}"
   local input_value=""
 
+  if $QUICK_INSTALL; then
+    die "Quick install cannot prompt for $label. Check the selected server package and configuration."
+  fi
   while [[ -z "$input_value" ]]; do
     if [[ -n "$default_value" ]]; then
       read -r -p "$label [$default_value]: " input_value
@@ -2243,6 +2458,11 @@ prompt_url() {
   local default_value="${3-}"
   local value=""
 
+  if $QUICK_INSTALL; then
+    [[ "$default_value" == http://* || "$default_value" == https://* ]] || die "No default URL for $label."
+    printf -v "$variable_name" '%s' "${default_value%/}"
+    return
+  fi
   while true; do
     prompt_required value "$label" "$default_value"
     if [[ "$value" == http://* || "$value" == https://* ]]; then
@@ -2283,6 +2503,9 @@ prompt_secret_confirm() {
   local first=""
   local second=""
 
+  if $QUICK_INSTALL; then
+    die "Quick install cannot prompt for $label. Check the selected server package and configuration."
+  fi
   while true; do
     read -r -s -p "$label: " first
     printf '\n'
@@ -2321,6 +2544,10 @@ choose_mode() {
   local service_name="$1"
   local choice=""
 
+  if $QUICK_INSTALL; then
+    SELECTED_MODE=local
+    return
+  fi
   while true; do
     printf '\n%s deployment mode\n' "$service_name"
     printf '  1) Local Docker Compose service\n'
@@ -2505,6 +2732,9 @@ prepare_owned_directory() {
 }
 
 retry_configuration() {
+  if $QUICK_INSTALL; then
+    die "Middleware setup failed. Fix the error above and rerun quick install with the same configuration."
+  fi
   confirm "Check failed. Reconfigure this service?" y || die "Deployment stopped."
 }
 
@@ -2588,6 +2818,10 @@ test_url_reachable() {
 check_minio_public_url() {
   local saved_url candidate kind status
   saved_url="$(dotenv_get MINIO_EXPOSE_URL)"
+  if $QUICK_INSTALL; then
+    wait_for_url "${saved_url%/}/minio/health/ready" '2[0-9][0-9]'
+    return
+  fi
   candidate="$saved_url"
   while true; do
     kind="$(python3 - "$candidate" <<'PYTHON'
@@ -2672,8 +2906,18 @@ configure_application_database() {
   workbench_set_env RUNTIME_DB_DATABASE "$1"
 }
 
+middleware_install_password() {
+  local password
+  password="$(dotenv_get "$1")"
+  if [[ -z "$password" || "$password" == *CHANGE_ME* ]]; then
+    generate_secret
+  else
+    printf '%s' "$password"
+  fi
+}
+
 initialize_postgresql() {
-  reuse_middleware postgresql && return 0
+  if ! $QUICK_INSTALL && reuse_middleware postgresql; then return; fi
   local host=""
   local port=""
   local username=""
@@ -2685,8 +2929,13 @@ initialize_postgresql() {
     choose_mode PostgreSQL
     if [[ "$SELECTED_MODE" == local ]]; then
       ensure_image_version dotenv_get set_env POSTGRES_VERSION PostgreSQL
-      prompt_required username "Database username" admin
-      prompt_secret_confirm password "Database password"
+      if $QUICK_INSTALL; then
+        username=admin
+        password="$(middleware_install_password POSTGRESQL_PASSWORD)"
+      else
+        prompt_required username "Database username" admin
+        prompt_secret_confirm password "Database password"
+      fi
       database=admin
 
       POSTGRES_MODE=local
@@ -2700,7 +2949,7 @@ initialize_postgresql() {
 
       mkdir -p "$DEPLOY_DIR/data/postgresql"
       if ops up middleware postgresql &&
-        middleware_compose run --rm postgresql-init &&
+        middleware_compose run --rm -T postgresql-init &&
         test_postgresql_local "$username" "$password" "$database"; then
         success "Local PostgreSQL is ready with the vector extension."
         return
@@ -2731,7 +2980,7 @@ initialize_postgresql() {
 }
 
 initialize_redis() {
-  reuse_middleware redis && return 0
+  if ! $QUICK_INSTALL && reuse_middleware redis; then return; fi
   local host=""
   local port=""
   local password=""
@@ -2743,7 +2992,11 @@ initialize_redis() {
     choose_mode Redis
     if [[ "$SELECTED_MODE" == local ]]; then
       ensure_image_version dotenv_get set_env REDIS_VERSION Redis
-      prompt_secret_confirm password "Redis password"
+      if $QUICK_INSTALL; then
+        password="$(middleware_install_password REDIS_PASSWORD)"
+      else
+        prompt_secret_confirm password "Redis password"
+      fi
 
       REDIS_MODE=local
       set_env REDIS_HOST redis
@@ -2783,7 +3036,7 @@ initialize_redis() {
 }
 
 initialize_rabbitmq() {
-  reuse_middleware rabbitmq && return 0
+  if ! $QUICK_INSTALL && reuse_middleware rabbitmq; then return; fi
   local host=""
   local port=""
   local management_port=""
@@ -2797,8 +3050,13 @@ initialize_rabbitmq() {
     choose_mode RabbitMQ
     if [[ "$SELECTED_MODE" == local ]]; then
       ensure_image_version dotenv_get set_env RABBITMQ_VERSION RabbitMQ
-      prompt_required username "RabbitMQ username" admin
-      prompt_secret_confirm password "RabbitMQ password"
+      if $QUICK_INSTALL; then
+        username=admin
+        password="$(middleware_install_password RABBITMQ_PASSWORD)"
+      else
+        prompt_required username "RabbitMQ username" admin
+        prompt_secret_confirm password "RabbitMQ password"
+      fi
 
       RABBITMQ_MODE=local
       set_env RABBITMQ_HOST rabbitmq
@@ -2849,8 +3107,13 @@ configure_local_minio() {
   local expose_port=""
 
   ensure_image_version dotenv_get set_env MINIO_VERSION MinIO
-  prompt_required username "MinIO username" admin
-  prompt_secret_confirm password "MinIO password"
+  if $QUICK_INSTALL; then
+    username=admin
+    password="$(middleware_install_password MINIO_PASSWORD)" || return 1
+  else
+    prompt_required username "MinIO username" admin
+    prompt_secret_confirm password "MinIO password"
+  fi
   expose_url="$(dotenv_get MINIO_EXPOSE_URL)"
   if [[ -z "$expose_url" || "$expose_url" == *CHANGE_ME* ]]; then
     ensure_deployment_access_host
@@ -2961,7 +3224,7 @@ configure_azure_blob() {
 }
 
 initialize_storage() {
-  reuse_middleware storage && return 0
+  if ! $QUICK_INSTALL && reuse_middleware storage; then return; fi
   info "4/4 Configure object storage"
   while true; do
     choose_mode "Object storage"
@@ -3000,7 +3263,11 @@ ensure_studio_configuration() {
 
   encryptor_password="$(studio_get_env ENCRYPTOR_PASSWORD)"
   if [[ -z "$encryptor_password" || "$encryptor_password" == CHANGE_ME_* ]]; then
-    prompt_secret_confirm encryptor_password "Studio data encryption password"
+    if $QUICK_INSTALL; then
+      encryptor_password="$(generate_secret)"
+    else
+      prompt_secret_confirm encryptor_password "Studio data encryption password"
+    fi
     studio_set_env ENCRYPTOR_PASSWORD "$encryptor_password"
   fi
 
@@ -3224,15 +3491,19 @@ check_workbench_placeholders() {
 
 wait_for_url() {
   local url="$1"
+  local expected="${2:-[23][0-9][0-9]}"
   local attempt=0
+  local status=""
 
   for ((attempt = 1; attempt <= 30; attempt++)); do
-    if curl --fail --silent --connect-timeout 5 --max-time 10 "$url" >/dev/null; then
+    if status="$(curl -q --noproxy '*' --silent --output /dev/null --write-out '%{http_code}' \
+      --connect-timeout 5 --max-time 10 -- "$url")" && [[ "$status" =~ ^($expected)$ ]]; then
       return
     fi
     sleep 2
   done
-  curl --fail --silent --show-error --connect-timeout 5 --max-time 10 "$url" >/dev/null
+  warn "Health check failed for $url (last HTTP status: ${status:-unavailable})."
+  return 1
 }
 
 test_workbench_http() {
@@ -3287,8 +3558,10 @@ deploy_workbench() {
   success "AosWork passed its HTTP health checks."
   info "AosWork frontend URL: $(workbench_get_env FRONTEND_URL)"
   info "AosWork API URL: $(workbench_get_env APP_URL)"
-  printf '\nAosWork administrator (fresh installation)\n  Username: admin\n  Default password: Admin@12345\n'
-  printf 'Change the default password on first sign-in. For an existing installation, use your current password.\n'
+  if ! $QUICK_INSTALL; then
+    printf '\nAosWork administrator (fresh installation)\n  Username: admin\n  Default password: Admin@12345\n'
+    printf 'Change the default password on first sign-in. For an existing installation, use your current password.\n'
+  fi
 }
 
 deploy_all() {
@@ -3573,10 +3846,21 @@ show_container_health() {
 # Operations shared by first installation and subsequent maintenance.
 compose_recreate() { ops up "${1%_compose}" "$2" --recreate --no-deps; }
 
-ops() { python3 "$SUPPORT_DIR/deploy-support.py" "$@"; }
+ops() {
+  if $QUICK_INSTALL; then
+    python3 "$SUPPORT_DIR/deploy-support.py" --non-interactive "$@"
+  else
+    python3 "$SUPPORT_DIR/deploy-support.py" "$@"
+  fi
+}
 
 environment_check() {
-  local missing=() cmd help host_status=0 host_checked=false
+  local missing=() host_commands=(ss systemctl) cmd help host_status=0 host_checked=false install_mode=setup
+  if [[ "$QUICK_ACCESS_MODE" == http ]]; then
+    install_mode=http-only
+  else
+    host_commands+=(nginx certbot)
+  fi
   if command -v python3 >/dev/null && ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 9))'; then
     warn "Python 3.9 or later is required."; return 1
   fi
@@ -3589,16 +3873,20 @@ environment_check() {
       ops host-check || host_status=$?
       (( host_status == 0 || host_status == 3 )) || return 1
     fi
-    for cmd in ss nginx certbot systemctl; do
+    for cmd in "${host_commands[@]}"; do
       command -v "$cmd" >/dev/null || missing+=("$cmd")
     done
   fi
   help="$(docker compose up --help 2>/dev/null)" || help=""
   [[ "$help" == *--wait* ]] || missing+=("Docker Compose v2 with --wait")
+  if $QUICK_INSTALL && (( host_status == 3 )); then
+    warn "Resolve the host preflight warnings before running quick install."
+    return 1
+  fi
   if (( ${#missing[@]} )); then
     printf 'Missing requirement: %s\n' "${missing[@]}"
-    confirm 'Configure the server environment now?' n || return 1
-    bash "$SUPPORT_DIR/install-docker.sh" || return 1
+    $QUICK_INSTALL || confirm 'Configure the server environment now?' n || return 1
+    bash "$SUPPORT_DIR/install-docker.sh" "$install_mode" || return 1
     help="$(docker compose up --help)" && [[ "$help" == *--wait* ]] || {
       warn 'A Docker Compose plugin supporting --wait is required.'; return 1;
     }
@@ -3609,10 +3897,14 @@ environment_check() {
   fi
   if ! docker info >/dev/null 2>&1; then
     if [[ "$(uname -s)" == Linux && "$EUID" == 0 ]] && ! systemctl is-active --quiet docker &&
-       confirm 'Start the Docker service?' n; then
+       { $QUICK_INSTALL || confirm 'Start the Docker service?' n; }; then
       bash "$SUPPORT_DIR/install-docker.sh" start || return 1
     fi
     docker info >/dev/null 2>&1 || { warn 'Docker daemon unavailable. Check its service and socket permissions.'; return 1; }
+  fi
+  if $QUICK_INSTALL && (( host_status == 3 )); then
+    warn "Resolve the host preflight warnings before running quick install."
+    return 1
   fi
   ops preflight || return 1
   if (( host_status == 3 )); then
@@ -3755,16 +4047,23 @@ run_menu_action() {
 
 # Older deployments stored this setting only in the AosWork environment.
 configure_shared_user_password() {
+  local requested_password="${1-}"
   local aos_password studio_password shared_password
   aos_password="$(workbench_get_env DEFAULT_USER_PASSWORD)"
   studio_password="$(studio_get_env DEFAULT_USER_PASSWORD)"
   [[ "$aos_password" != CHANGE_ME_DEFAULT_USER_PASSWORD ]] || aos_password=""
   [[ "$studio_password" != CHANGE_ME_DEFAULT_USER_PASSWORD ]] || studio_password=""
 
-  shared_password="${aos_password:-$studio_password}"
-  if [[ -n "$aos_password" && -n "$studio_password" && "$aos_password" != "$studio_password" ]]; then
+  shared_password="${requested_password:-${aos_password:-$studio_password}}"
+  if [[ -z "$requested_password" && -n "$aos_password" && -n "$studio_password" && "$aos_password" != "$studio_password" ]]; then
+    if $QUICK_INSTALL; then
+      die "The saved default passwords for new users differ. Set the same value in .env.workbench and .env.studio."
+    fi
     warn "The configured default passwords for new AOS Work users differ. Choose one password."
     shared_password=""
+  fi
+  if $QUICK_INSTALL && workbench_value_needs_configuration "$shared_password"; then
+    shared_password="$(generate_secret)"
   fi
   while [[ -z "$shared_password" || "$shared_password" == *CHANGE_ME* ]]; do
     prompt_secret_confirm shared_password "Default password for new AOS Work users"
@@ -3859,7 +4158,7 @@ MENU
 }
 
 prepare() {
-  [[ -t 0 ]] || die "Run this action in an interactive terminal."
+  $QUICK_INSTALL || [[ -t 0 ]] || die "Run this action in an interactive terminal."
   [[ -f "$STUDIO_COMPOSE_FILE" ]] || die "Select a server package in menu 2 first."
   ops check-files
   require_command docker
@@ -3900,6 +4199,229 @@ prepare_health_check() {
   [[ -f "$ENV_FILE" ]] || die "Missing .env.middleware. Select a package first."
   [[ -f "$STUDIO_ENV_FILE" ]] || die "Missing .env.studio. Select a package first."
   cd "$DEPLOY_DIR"
+}
+
+quick_install_config() {
+  cat <<'CONFIG'
+# Save as .env next to deploy.sh. Use literal values without shell quoting.
+# Leave all three domains blank for HTTP, or fill all three for automatic HTTPS.
+AOS_WORK_DOMAIN=
+STUDIO_DOMAIN=
+STORAGE_DOMAIN=
+# Optional IP for HTTP access. The installer detects the server IP by default.
+SERVER_IP=
+# Optional password for new AOS Work users. Leave blank to generate one.
+# If you set a password here, restrict this file to mode 600 or 400.
+DEFAULT_USER_PASSWORD=
+CONFIG
+}
+
+read_quick_config() {
+  local file="$1"
+  local -n values="$2"
+  local line="" key value domain line_number=0 domain_count=0
+  local fqdn='^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$'
+  local -A used_domains=()
+
+  [[ -f "$file" && ! -L "$file" && -r "$file" ]] || die "Provide a readable quick install configuration file."
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line_number=$((line_number + 1))
+    line="${line%$'\r'}"
+    [[ "$line" =~ ^[[:blank:]]*(#.*)?$ ]] && continue
+    key="${line%%=*}"
+    [[ "$line" == *=* ]] || die "Expected KEY=value on configuration line $line_number."
+    case "$key" in
+      AOS_WORK_DOMAIN | STUDIO_DOMAIN | STORAGE_DOMAIN | SERVER_IP | DEFAULT_USER_PASSWORD) ;;
+      *) die "Unknown setting on configuration line $line_number." ;;
+    esac
+    [[ -z "${values[$key]+set}" ]] || die "Duplicate setting: $key."
+    value="${line#*=}"
+    [[ "$value" != *[[:cntrl:]]* ]] || die "$key must not contain control characters."
+    values[$key]="$value"
+  done < "$file"
+
+  for key in AOS_WORK_DOMAIN STUDIO_DOMAIN STORAGE_DOMAIN; do
+    value="${values[$key]-}"
+    [[ -n "$value" ]] || continue
+    domain="${value,,}"
+    domain="${domain%.}"
+    if [[ ! "$domain" =~ $fqdn || "${#domain}" -gt 253 || "$domain" =~ ^([0-9]+\.)+[0-9]+$ ]]; then
+      die "Set $key to a fully qualified public DNS name."
+    fi
+    case "$domain" in
+      *.local | *.localhost | *.test | *.invalid) die "Set $key to a public DNS name." ;;
+    esac
+    [[ -z "${used_domains[$domain]+set}" ]] || die "Use three distinct domains."
+    used_domains[$domain]=1
+    values[$key]="$domain"
+    domain_count=$((domain_count + 1))
+  done
+  (( domain_count == 0 || domain_count == 3 )) ||
+    die "Fill all three domains for HTTPS or leave all three blank for IP access."
+  value="${values[DEFAULT_USER_PASSWORD]-}"
+  if [[ -n "$value" ]]; then
+    [[ "$value" != *CHANGE_ME* && "$value" != *"'"* ]] ||
+      die "Set DEFAULT_USER_PASSWORD to a password without single quotes or the CHANGE_ME placeholder."
+    case "$(stat -c '%a' -- "$file")" in
+      400 | 600) ;;
+      *) die "Set the configuration file permissions to 600 or 400 when supplying a password." ;;
+    esac
+  fi
+}
+
+lock_deployment_directory() {
+  if command -v flock >/dev/null; then
+    exec 9<"$DEPLOY_DIR"
+    flock -n 9 || die "Another deployment session is open in this directory."
+  fi
+}
+
+record_quick_install() {
+  local state="$DEPLOY_DIR/.aos-install"
+  local fingerprint="$1" mode="$2"
+  local existing staging
+
+  [[ ! -L "$state" && ! -L "$state/quick-input" && ! -L "$state/quick-complete" &&
+     ! -L "$state/quick-http" && ! -L "$state/quick-ip" ]] ||
+    die "Refusing to use symlinked quick install state."
+  if [[ -f "$state/quick-input" ]]; then
+    [[ ! -e "$state/cleanup-pending" ]] || die "Finish deployment cleanup from the menu first."
+    [[ "$(cat "$state/quick-input")" == "$fingerprint" ]] ||
+      die "Use the same configuration values to resume quick install."
+    return
+  fi
+
+  for existing in "$state" "$DEPLOY_DIR"/.env.* "$DEPLOY_DIR"/.domains.json \
+    "$DEPLOY_DIR"/docker-compose.* "$DEPLOY_DIR"/compose "$DEPLOY_DIR"/workbench "$DEPLOY_DIR"/data; do
+    [[ ! -e "$existing" && ! -L "$existing" ]] ||
+      die "Quick install requires a new deployment directory containing deploy.sh and your configuration."
+  done
+  staging="$(mktemp -d "$DEPLOY_DIR/.quick-install.XXXXXXXX")"
+  printf '%s\n' "$fingerprint" > "$staging/quick-input"
+  if [[ "$mode" == http ]]; then
+    touch "$staging/quick-http"
+  fi
+  mv -T -- "$staging" "$state"
+}
+
+verify_quick_install() {
+  local aos_url studio_url storage_url studio_api_port
+
+  aos_url="$(workbench_get_env FRONTEND_URL)"
+  studio_url="$(studio_get_env ASSETS_SEARCH_SNAPSHOT_URL)"
+  studio_url="${studio_url%/basilos/asset/search-embed}"
+  storage_url="$(dotenv_get MINIO_EXPOSE_URL)"
+  test_workbench_http || die "AOS Work API, frontend or Runtime health check failed."
+  studio_api_port="$(studio_get_env STUDIO_API_HOST_PORT)"
+  wait_for_url "http://127.0.0.1:$studio_api_port/" '[234][0-9][0-9]' ||
+    die "Studio API did not respond."
+  wait_for_url "${aos_url%/}/" || die "AOS Work endpoint health check failed."
+  wait_for_url "${studio_url%/}/" || die "Studio endpoint health check failed."
+  wait_for_url "${storage_url%/}/minio/health/ready" '2[0-9][0-9]' ||
+    die "Storage endpoint health check failed."
+  ops verify-quick-services
+  success "AOS Work, Studio and Storage passed their health checks."
+  printf '  AOS Work  %s\n  Studio    %s\n  Storage   %s\n' "$aos_url" "$studio_url" "$storage_url"
+}
+
+quick_docker_environment() {
+  local template key value
+  # Compose gives the caller's environment priority over deployment files.
+  for template in "$ENV_TEMPLATE" "$STUDIO_ENV_TEMPLATE" "$WORKBENCH_ENV_TEMPLATE"; do
+    while IFS='=' read -r key value; do
+      if [[ "$key" =~ ^[A-Z_][A-Z_0-9]*$ ]]; then
+        unset "$key"
+      fi
+    done < "$template"
+  done
+  unset DOCKER_CONTEXT DOCKER_TLS_VERIFY DOCKER_CERT_PATH COMPOSE_ENV_FILES COMPOSE_PROFILES
+  export DOCKER_HOST=unix:///var/run/docker.sock
+}
+
+quick_install() {
+  [[ $# -le 1 ]] || die "Usage: sudo bash deploy.sh --quick-install [config-file]"
+  [[ "$(uname -s)" == Linux && "$EUID" == 0 ]] ||
+    die "Run quick install with sudo on a dedicated Ubuntu or Debian server."
+  grep -Eq '^ID=(ubuntu|debian|"ubuntu"|"debian")$' /etc/os-release && [[ -d /run/systemd/system ]] ||
+    die "Quick install requires Ubuntu or Debian with systemd running."
+
+  local -A settings=()
+  local input=()
+  local fingerprint domain
+  local config_file="${1:-$DEPLOY_DIR/.env}"
+  local state="$DEPLOY_DIR/.aos-install"
+  if [[ $# -eq 1 || -e "$config_file" || -L "$config_file" ]]; then
+    read_quick_config "$config_file" settings
+  fi
+  if [[ -n "${settings[AOS_WORK_DOMAIN]-}" ]]; then
+    QUICK_ACCESS_MODE=https
+    input=("${settings[AOS_WORK_DOMAIN]}" "${settings[STUDIO_DOMAIN]}" "${settings[STORAGE_DOMAIN]}")
+    for domain in "${input[@]}"; do
+      timeout 15 getent ahosts "$domain" >/dev/null || die "Cannot resolve $domain. Check its public DNS records."
+    done
+  else
+    QUICK_ACCESS_MODE=http
+    input=(http)
+  fi
+  fingerprint="$(printf '%s\0' "${input[@]}" "${settings[DEFAULT_USER_PASSWORD]-}" | sha256sum)"
+
+  require_command flock
+  exec 8>/run/aos-work-quick-install.lock
+  flock -n 8 || die "Another quick install is running on this host."
+  lock_deployment_directory
+  # Nginx workers must be able to traverse the HTTP-01 challenge directories.
+  umask 022
+  record_quick_install "$fingerprint" "$QUICK_ACCESS_MODE"
+  cd "$DEPLOY_DIR"
+  QUICK_INSTALL=true
+  quick_docker_environment
+
+  if [[ -f "$state/quick-complete" ]]; then
+    info "Quick install already completed. Checking the running deployment."
+    if [[ "$QUICK_ACCESS_MODE" == http && -n "${settings[SERVER_IP]-}" ]]; then
+      ops select-quick-ip "--address=${settings[SERVER_IP]}" >/dev/null
+    fi
+    verify_quick_install
+    return
+  fi
+
+  info "1/5 Check the host and install system dependencies"
+  if command -v docker >/dev/null && docker info >/dev/null 2>&1 && command -v python3 >/dev/null; then
+    ops check-quick-host
+  fi
+  environment_check
+  ops check-quick-host
+
+  info "2/5 Download and verify the pinned server package"
+  python3 "$SUPPORT_DIR/release-install.py" quick || die "Fix the package error above and rerun quick install."
+  ops preflight
+  prepare
+  configure_shared_user_password "${settings[DEFAULT_USER_PASSWORD]-}"
+  workbench_set_env RUNTIME_SANDBOX_HOST_ID 0
+
+  if [[ "$QUICK_ACCESS_MODE" == https ]]; then
+    info "3/5 Configure domains and HTTPS"
+    python3 "$SUPPORT_DIR/domain-ssl.py" --configure storage "${settings[STORAGE_DOMAIN]}"
+    python3 "$SUPPORT_DIR/domain-ssl.py" --configure studio "${settings[STUDIO_DOMAIN]}"
+    python3 "$SUPPORT_DIR/domain-ssl.py" --configure workbench "${settings[AOS_WORK_DOMAIN]}"
+  else
+    info "3/5 Configure HTTP access by server IP"
+    DEPLOYMENT_ACCESS_HOST="$(ops select-quick-ip "--address=${settings[SERVER_IP]-}")"
+    info "Using $DEPLOYMENT_ACCESS_HOST and the default application ports."
+  fi
+
+  info "4/5 Deploy local middleware, Studio and AOS Work"
+  initialize_postgresql
+  initialize_redis
+  initialize_rabbitmq
+  initialize_storage
+  deploy_all
+
+  info "5/5 Verify services and application endpoints"
+  verify_quick_install
+  touch "$state/quick-complete"
+  printf '\nOn a fresh installation, sign in to AOS Work as admin with the release default password Admin@12345 and change it immediately.\n'
+  printf 'The default password for newly created users is saved in %s.\n' "$WORKBENCH_ENV_FILE"
 }
 
 self_test() {
@@ -4091,6 +4613,16 @@ main() {
   # Compose must use the configured application password, even if the caller exported this key.
   unset DEFAULT_USER_PASSWORD
   case "${1-}" in
+    --quick-install-config)
+      [[ $# -eq 1 ]] || die "Usage: bash deploy.sh --quick-install-config"
+      quick_install_config
+      return
+      ;;
+    --quick-install)
+      shift
+      quick_install "$@" </dev/null
+      return
+      ;;
     --self-test)
       self_test
       return
@@ -4113,14 +4645,11 @@ main() {
       return
       ;;
     '') ;;
-    *) die "Usage: ./deploy.sh [--self-test|--update|--health|--check]" ;;
+    *) die "Usage: ./deploy.sh [--quick-install-config|--quick-install [config-file]|--self-test|--update|--health|--check]" ;;
   esac
 
   show_banner
-  if command -v flock >/dev/null; then
-    exec 9<"$DEPLOY_DIR"
-    flock -n 9 || die 'Another deployment session is open in this directory.'
-  fi
+  lock_deployment_directory
   if [[ -f "$DEPLOY_DIR/.aos-install/cleanup-pending" ]]; then
     if command -v python3 >/dev/null; then
       python3 "$SUPPORT_DIR/reset-deployment.py"
