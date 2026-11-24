@@ -31,8 +31,8 @@ main() {
         die 'Ubuntu or Debian is required.'
     [ -d /run/systemd/system ] || die 'systemd must be running.'
 
-    version=v2026.11.24-quick-install-preview.1
-    digest=dcef9452a473c5bf62cf85d72eb2d1115b2c72486ca0a7bef33de5028723d997
+    version=v2026.11.25-quick-install-preview.1
+    digest=ad7620c10ed1e487d075c5e878e50d6c2303ab26c29e90bc88fdaab1cccd5441
     url="https://github.com/basilos-ai/aos-work-release/releases/download/$version/deploy.sh"
     deploy_dir=/opt/aos-work
     [ "$#" -eq 0 ] || [ "$#" -eq 3 ] || die 'Usage: sh install-aos.sh [WORK_DOMAIN STUDIO_DOMAIN STORAGE_DOMAIN]'
