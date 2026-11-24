@@ -142,6 +142,7 @@ PY
 
   printf '\n[3/5] Configuring HTTPS (DNS and inbound TCP 80/443 must be ready)\n'
   install -d -m 0755 /var/www/shieldon-acme/.well-known/acme-challenge
+  chmod 0755 /var/www/shieldon-acme /var/www/shieldon-acme/.well-known /var/www/shieldon-acme/.well-known/acme-challenge
   # Keep an existing HTTPS endpoint during retry; create HTTP challenge site only on first run.
   if [ ! -f "$site" ]; then
     cat > "$site" <<NGINX
@@ -149,17 +150,30 @@ $marker
 server {
     listen 80;
     server_name $domain;
-    location /.well-known/acme-challenge/ { root /var/www/shieldon-acme; }
+    location ^~ /.well-known/acme-challenge/ { root /var/www/shieldon-acme; }
     location / { return 503; }
 }
 NGINX
     chmod 644 "$site"
   fi
+  # Upgrade an earlier launcher-owned site so dotfile regex rules cannot block ACME.
+  sed -i 's@location /\.well-known/acme-challenge/@location ^~ /.well-known/acme-challenge/@' "$site"
   nginx -t
   systemctl enable --now nginx
   systemctl reload nginx
-  certbot certonly --non-interactive --agree-tos --register-unsafely-without-email \
-    --webroot -w /var/www/shieldon-acme --cert-name "$cert_name" -d "$domain" --keep-until-expiring
+  probe="shieldon-check-$(python3 -c 'import secrets; print(secrets.token_hex(12))')"
+  probe_file="/var/www/shieldon-acme/.well-known/acme-challenge/$probe"
+  printf '%s' "$probe" > "$probe_file"
+  chmod 0644 "$probe_file"
+  actual=$(curl --noproxy '*' -fsS --resolve "$domain:80:127.0.0.1" --max-time 15 "http://$domain/.well-known/acme-challenge/$probe") || actual=''
+  rm -f "$probe_file"
+  [ "$actual" = "$probe" ] || fail 'Local ACME webroot check failed. Inspect /var/log/nginx/error.log and directory traversal permissions.'
+  # Public challenge files must be readable by Nginx, independent of the secret-file umask.
+  (
+    umask 022
+    certbot certonly --non-interactive --agree-tos --register-unsafely-without-email \
+      --webroot -w /var/www/shieldon-acme --cert-name "$cert_name" -d "$domain" --keep-until-expiring
+  )
 
   printf '\n[4/5] Deploying PostgreSQL, Redis, SeaweedFS and ShieldON\n'
   sh deploy.sh --with-middleware
@@ -169,7 +183,7 @@ $marker
 server {
     listen 80;
     server_name $domain;
-    location /.well-known/acme-challenge/ { root /var/www/shieldon-acme; }
+    location ^~ /.well-known/acme-challenge/ { root /var/www/shieldon-acme; }
     location / { return 301 https://\$host\$request_uri; }
 }
 server {
