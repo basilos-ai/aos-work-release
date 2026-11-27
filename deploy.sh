@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# aos-work deployment release: v2026.11.26
+# aos-work deployment release: v2026.11.27
 
 set -Eeuo pipefail
 export LC_ALL=C
@@ -332,7 +332,8 @@ from urllib.parse import urlsplit
 RELEASES = 'https://github.com/basilos-ai/aos-work-release/releases'
 # Newest first. Add the new tag here when preparing a release.
 VERSIONS = {
-    'v2026.11.26': None,
+    'v2026.11.27': None,
+    'v2026.11.26': '000ea14e9e3603075fe7b599cdabc2da597b09c414f99c2f4a150eff5be7f63c',
     'v2026.11.25.2': 'e3134ea03a9fa83ed72995ea719f431f5e5ee6130a247763ff17aacb3b7163f7',
     'v2026.11.25.1': '4c8510674d6a0cd3909601a54d83b8bc23dc843223abd629d9565f0c7221a422',
     'v2026.11.25': '8d1e032779999a0a2f64d82ea8f58e9328a1874d0ab7c71930d156758a4bb40c',
@@ -2070,7 +2071,7 @@ WORKBENCH_VERSION=v1.8.68
 WORKBENCH_FRONTEND_IMAGE=ghcr.io/basilos-ai/workbench-frontend
 WORKBENCH_FRONTEND_VERSION=v1.8.50
 RUNTIME_IMAGE=ghcr.io/basilos-ai/workbench-runtime
-RUNTIME_VERSION=v1.8.34
+RUNTIME_VERSION=v1.8.36
 RUNTIME_SANDBOX_IMAGE=ghcr.io/basilos-ai/workbench-runtime-sandbox
 RUNTIME_SANDBOX_VERSION=latest
 RUNTIME_NGINX_IMAGE=nginx
